@@ -7,6 +7,8 @@ from utils.ui_components import CustomDialog, ModernModal
 # IMPORTS DE TUS NUEVOS MÓDULOS
 from views.dashboard_modules.scrapers import DolaritoScraper
 from views.dashboard_modules.logic import DashboardLogic
+from views.dashboard_modules.historical_analyzer import HistoricalAnalyzer
+from views.dashboard_modules.historical_widgets import HistoricalTimelineWidget
 
 class DashboardView(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -16,6 +18,7 @@ class DashboardView(ctk.CTkFrame):
         # INICIALIZAR LOS MÓDULOS
         self.scraper_engine = DolaritoScraper()
         self.logic_engine = DashboardLogic(self.controller.api_client, self.controller.cursor, self.controller.conn)
+        self.historical_analyzer = HistoricalAnalyzer(self.controller.conn)
 
         # TABLA DE BASE DE DATOS (Mantenida por seguridad)
         try:
@@ -30,7 +33,6 @@ class DashboardView(ctk.CTkFrame):
         except Exception as e:
             print(f"⚠️ Error verificando bóveda: {e}")
 
-        self.market_widgets = []
         self.historical_gaps = [] 
         self.is_scanning = False 
         self.datos_historicos_cache = []
@@ -47,7 +49,7 @@ class DashboardView(ctk.CTkFrame):
         # Título
         ctk.CTkLabel(
             header, 
-            text="TABLERO DE MANDO (V13.0 - Historia Propia)", 
+            text="TABLERO DE MANDO (V12.0 - Persistente Modular)", 
             font=("Arial", 22, "bold"), 
             text_color="#3498db"
         ).pack(side="left")
@@ -85,10 +87,14 @@ class DashboardView(ctk.CTkFrame):
         self.lbl_total_usdt = self.mk_stat_card(self.patrimonio_frame, 1, "STOCK USDT", "---", "#e3a319")
         self.lbl_equity = self.mk_stat_card(self.patrimonio_frame, 2, "PATRIMONIO TOTAL", "US$ ---", "#3498db")
 
-        # --- LÍNEA DE TIEMPO ---
+        # --- LÍNEA DE TIEMPO CLÁSICA (Scraper Dolarito + Turno en Vivo) ---
+        # ⚠️ MANTENER ESTO - Se usa en render_escaneo() para mostrar el turno actual
         self.timeline_frame = ctk.CTkFrame(self, fg_color="#0f0f0f", border_width=1, border_color="#333")
         self.timeline_frame.pack(fill="x", padx=20, pady=5)
         self.timeline_frame.grid_columnconfigure((0,1,2,3,4), weight=1)
+        
+        self.market_widgets = []  # ⚠️ NO BORRAR - Se usa en render_escaneo()
+        
         for i in range(5):
             f = ctk.CTkFrame(self.timeline_frame, fg_color="#1a1a1a", corner_radius=6, border_width=1, border_color="#333")
             f.grid(row=0, column=i, padx=4, pady=5, sticky="ew")
@@ -97,10 +103,17 @@ class DashboardView(ctk.CTkFrame):
             lbl_gap = ctk.CTkLabel(f, text="---%", font=("Arial", 26, "bold"), text_color="white")
             lbl_gap.pack(pady=(0,5))
             self.market_widgets.append((f, lbl_dia, lbl_gap))
+        
+        # Separador visual
+        separator = ctk.CTkFrame(self, height=2, fg_color="#333")
+        separator.pack(fill="x", padx=40, pady=10)
+        
+        # --- LÍNEA DE TIEMPO NUEVA (Histórico Real de P2P BD) ---
+        self.historical_timeline = HistoricalTimelineWidget(self, self.historical_analyzer)
+        self.historical_timeline.pack(fill="x", padx=20, pady=5)
 
         # --- INICIO MOTORES ---
         self.after(1000, self.auto_scan_loop)
-        # Hilos usando las funciones puente nuevas
         threading.Thread(target=self.cargar_historia_combinada, daemon=True).start()
         threading.Thread(target=self.background_dolarito_updater, daemon=True).start()
 
@@ -203,111 +216,18 @@ class DashboardView(ctk.CTkFrame):
         self.lbl_gan_sesion_usdt = ctk.CTkLabel(self.f_sesion, text="--- USDT", font=("Arial", 12), text_color="#aaaaaa")
         self.lbl_gan_sesion_usdt.grid(row=2, column=0, pady=(0, 10))
 
-    # --- PUENTES A MÓDULOS EXTERNOS (VERSIÓN HÍBRIDA MEJORADA) ---
-    def cargar_historia_combinada(self):
-        """ 
-        Estrategia 'Independencia de Datos':
-        1. Intenta leer la historia de TU Base de Datos (p2p_history).
-        2. Si encuentra datos suficientes, los usa.
-        3. Si no (ej: DB vacía), usa el Scraper de Dolarito como respaldo.
-        """
-        datos_cargados = False
-        
-        # 1. INTENTO INTERNO (Base de Datos)
-        try:
-            # Traemos el promedio del GAP de los últimos 5 días distintos a HOY
-            hoy_str = datetime.now().strftime('%Y-%m-%d')
-            # Query inteligente: Agrupa por fecha y saca el promedio del día
-            query = """
-                SELECT fecha, AVG(gap_ccl) 
-                FROM p2p_history 
-                WHERE fecha < ? 
-                GROUP BY fecha 
-                ORDER BY fecha DESC 
-                LIMIT 4
-            """
-            self.controller.cursor.execute(query, (hoy_str,))
-            filas = self.controller.cursor.fetchall()
-            
-            datos_db = []
-            # Mapeo de días de la semana para visualización
-            dias_map = {0: "LUN", 1: "MAR", 2: "MIE", 3: "JUE", 4: "VIE", 5: "SAB", 6: "DOM"}
-            
-            for f, gap in filas:
-                # Convertimos fecha YYYY-MM-DD a nombre de día (LUN, MAR...)
-                try:
-                    dt = datetime.strptime(f, '%Y-%m-%d')
-                    nombre_dia = dias_map[dt.weekday()]
-                    datos_db.append({"fecha": nombre_dia, "gap": gap})
-                except: pass
-            
-            # SI TENEMOS DATOS SUFICIENTES (Al menos 1 día cerrado), USAMOS ESTO
-            if datos_db:
-                # Invertimos para que quede cronológico (Más viejo -> Más nuevo)
-                datos_db.reverse() 
-                self.datos_historicos_cache = datos_db
-                self.after(0, self.render_historia_inicial)
-                print(f"✅ Modo Autónomo: Usando {len(datos_db)} días de historia interna.")
-                datos_cargados = True
-                
-        except Exception as e:
-            print(f"⚠️ Aviso: No se pudo leer historia interna ({e})")
-
-        # 2. FALLBACK EXTERNO (Si la DB estaba vacía o falló)
-        if not datos_cargados:
-            print("🦅 Modo Respaldo: Buscando historia en Dolarito...")
-            try:
-                datos = self.scraper_engine.cargar_historia_combinada()
-                if datos:
-                    self.datos_historicos_cache = datos
-                    self.after(0, self.render_historia_inicial)
-            except: pass
-
-        # 3. BUCLE VIGILANTE (Solo para detectar el cierre de HOY)
-        ultimo_gap_visto = -999.0 
-        while True:
-            ahora = datetime.now()
-            
-            # Ventana de Cierre (17:30 - 18:15)
-            es_dia_operable = (0 <= ahora.weekday() <= 4)
-            minutos_dia = ahora.hour * 60 + ahora.minute
-            ventana_abierta = (1050 <= minutos_dia <= 1095)
-
-            if es_dia_operable and ventana_abierta:
-                # Usamos el scraper solo para validar el cierre oficial del mercado
-                try:
-                    datos = self.scraper_engine.cargar_historia_combinada()
-                    if datos:
-                        gap_actual = datos[0].get("gap", 0.0)
-                        if gap_actual == ultimo_gap_visto:
-                            print(f"✅ Mercado Cerrado (Estable en {gap_actual:.2f}%).")
-                            time.sleep(43200) # Dormir hasta mañana
-                        else:
-                            ultimo_gap_visto = gap_actual
-                            time.sleep(300) 
-                    else:
-                        time.sleep(300)
-                except:
-                    time.sleep(300)
-            else:
-                time.sleep(600)
-
     def render_historia_inicial(self):
             """ Pinta los GAPs históricos calculados en los 4 espacios de la izquierda """
             if not self.datos_historicos_cache:
                 return
 
-            # Tomamos los últimos 4 registros disponibles
-            datos_a_mostrar = self.datos_historicos_cache[-4:] 
-
-            for i, dato in enumerate(datos_a_mostrar):
-                if i >= 4: break 
+            for i, dato in enumerate(self.datos_historicos_cache):
+                if i >= 4: break # El 5to espacio es para el "VIVO"
                 
                 frame, lbl_dia, lbl_gap = self.market_widgets[i]
                 
-                # El dato ya viene formateado sea de DB o Scraper
-                # De DB viene como "LUN", de Scraper como "Lunes..."
-                dia_texto = dato["fecha"].split(',')[0].upper()[:3]
+                # Extraemos el día (ej: "Martes" de "Martes, 16 de...")
+                dia_semana = dato["fecha"].split(',')[0] 
                 gap_val = dato["gap"]
                 
                 # Colores de tendencia
@@ -315,7 +235,7 @@ class DashboardView(ctk.CTkFrame):
                 if gap_val > 4.5: color = "#e74c3c" # Eufórico
                 elif gap_val < 2.5: color = "#2ecc71" # Oportunidad
                 
-                lbl_dia.configure(text=dia_texto)
+                lbl_dia.configure(text=dia_semana.upper()[:3]) # Muestra MAR, MIE, JUE...
                 lbl_gap.configure(text=f"{gap_val:.2f}%", text_color=color)
 
     def background_dolarito_updater(self):
@@ -326,18 +246,89 @@ class DashboardView(ctk.CTkFrame):
                 self.cached_mep, self.cached_mep_pct = datos["mep"]
                 self.cached_ccl, self.cached_ccl_pct = datos["ccl"]
             time.sleep(60)
+    def cargar_historia_combinada(self):
+        """
+        Carga datos históricos del scraper de Dolarito
+        (Sistema viejo - mantener para compatibilidad)
+        """
+        print("📊 Iniciando carga de historia de Dolarito...")
+        
+        try:
+            # Cargar datos históricos del scraper
+            historia = self.scraper_engine.cargar_historia_combinada()
+            
+            if historia:
+                self.historical_gaps = historia
+                print(f"✅ Historia cargada: {len(historia)} registros")
+                
+                # Actualizar los widgets de la línea de tiempo vieja
+                self.after(0, lambda: self.actualizar_timeline_viejo(historia))
+            else:
+                print("⚠️ No se pudo cargar historia de Dolarito")
+                self.historical_gaps = []
+                
+        except Exception as e:
+            print(f"❌ Error cargando historia: {e}")
+            self.historical_gaps = []
 
+    def actualizar_timeline_viejo(self, historia):
+        """
+        Actualiza la línea de tiempo vieja (primeros 4 widgets)
+        El 5to widget (market_widgets[-1]) se actualiza en render_escaneo
+        """
+        try:
+            # Actualizar solo los primeros 4 (los históricos)
+            for i, gap_data in enumerate(historia[:4]):
+                if i >= len(self.market_widgets) - 1:  # -1 porque el último es "HOY"
+                    break
+                
+                frame_hist, lbl_dia, lbl_gap = self.market_widgets[i]
+                
+                dia_texto = gap_data.get('fecha', '---')
+                gap_val = gap_data.get('gap', 0.0)
+                
+                # Colorear según valor
+                color = "#3498db"  # Azul por defecto
+                if gap_val > 4.5:
+                    color = "#e74c3c"  # Rojo (GAP alto)
+                elif gap_val < 2.5:
+                    color = "#2ecc71"  # Verde (GAP bajo - oportunidad)
+                
+                # Extraer día de la semana del texto
+                try:
+                    dia_semana = dia_texto.split()[0][:3].upper()
+                except:
+                    dia_semana = "---"
+                
+                lbl_dia.configure(text=dia_semana)
+                lbl_gap.configure(text=f"{gap_val:.2f}%", text_color=color)
+                
+        except Exception as e:
+            print(f"Error actualizando timeline viejo: {e}")
+            
     # --- LÓGICA DE ESCANEO ---
     def auto_scan_loop(self):
-        if not self.is_scanning: self.lanzar_escaneo()
+        if not self.is_scanning: 
+            self.lanzar_escaneo()
+        
         try: 
             self.update_stats_footer()
             self.actualizar_tablero_estrategico()
             
+            # ✅ MOVER DENTRO DEL TRY
+            if hasattr(self, 'historical_timeline'):
+                try:
+                    self.historical_timeline.update_data()
+                except Exception as e:
+                    print(f"⚠️ Error actualizando timeline histórico: {e}")
+                    # No hacer nada más, seguir con el loop
+            
         except Exception as e: 
-            print(f"Error en loop visual: {e}") 
-            pass
+            print(f"⚠️ Error en loop visual: {e}") 
+        
+        # Reprogramar siempre (incluso si hubo error)
         self.after(5000, self.auto_scan_loop)
+        
 
     def lanzar_escaneo(self):
         if self.is_scanning: return
