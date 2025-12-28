@@ -47,7 +47,7 @@ class DashboardView(ctk.CTkFrame):
         # Título
         ctk.CTkLabel(
             header, 
-            text="TABLERO DE MANDO (V12.0 - Persistente Modular)", 
+            text="TABLERO DE MANDO (V13.0 - Historia Propia)", 
             font=("Arial", 22, "bold"), 
             text_color="#3498db"
         ).pack(side="left")
@@ -203,70 +203,93 @@ class DashboardView(ctk.CTkFrame):
         self.lbl_gan_sesion_usdt = ctk.CTkLabel(self.f_sesion, text="--- USDT", font=("Arial", 12), text_color="#aaaaaa")
         self.lbl_gan_sesion_usdt.grid(row=2, column=0, pady=(0, 10))
 
-    # --- PUENTES A MÓDULOS EXTERNOS ---
+    # --- PUENTES A MÓDULOS EXTERNOS (VERSIÓN HÍBRIDA MEJORADA) ---
     def cargar_historia_combinada(self):
         """ 
-        Estrategia 'El Estabilizador':
-        Entre las 17:30 y 18:15, busca que el valor del GAP se repita dos veces seguidas.
-        Si el valor no cambia en 5 minutos, asumimos que es el CIERRE DEFINITIVO.
+        Estrategia 'Independencia de Datos':
+        1. Intenta leer la historia de TU Base de Datos (p2p_history).
+        2. Si encuentra datos suficientes, los usa.
+        3. Si no (ej: DB vacía), usa el Scraper de Dolarito como respaldo.
         """
-        # 1. ESCANEO INICIAL (Al abrir el programa)
+        datos_cargados = False
+        
+        # 1. INTENTO INTERNO (Base de Datos)
         try:
-            datos = self.scraper_engine.cargar_historia_combinada()
-            if datos:
-                self.datos_historicos_cache = datos
+            # Traemos el promedio del GAP de los últimos 5 días distintos a HOY
+            hoy_str = datetime.now().strftime('%Y-%m-%d')
+            # Query inteligente: Agrupa por fecha y saca el promedio del día
+            query = """
+                SELECT fecha, AVG(gap_ccl) 
+                FROM p2p_history 
+                WHERE fecha < ? 
+                GROUP BY fecha 
+                ORDER BY fecha DESC 
+                LIMIT 4
+            """
+            self.controller.cursor.execute(query, (hoy_str,))
+            filas = self.controller.cursor.fetchall()
+            
+            datos_db = []
+            # Mapeo de días de la semana para visualización
+            dias_map = {0: "LUN", 1: "MAR", 2: "MIE", 3: "JUE", 4: "VIE", 5: "SAB", 6: "DOM"}
+            
+            for f, gap in filas:
+                # Convertimos fecha YYYY-MM-DD a nombre de día (LUN, MAR...)
+                try:
+                    dt = datetime.strptime(f, '%Y-%m-%d')
+                    nombre_dia = dias_map[dt.weekday()]
+                    datos_db.append({"fecha": nombre_dia, "gap": gap})
+                except: pass
+            
+            # SI TENEMOS DATOS SUFICIENTES (Al menos 1 día cerrado), USAMOS ESTO
+            if datos_db:
+                # Invertimos para que quede cronológico (Más viejo -> Más nuevo)
+                datos_db.reverse() 
+                self.datos_historicos_cache = datos_db
                 self.after(0, self.render_historia_inicial)
-        except: pass
+                print(f"✅ Modo Autónomo: Usando {len(datos_db)} días de historia interna.")
+                datos_cargados = True
+                
+        except Exception as e:
+            print(f"⚠️ Aviso: No se pudo leer historia interna ({e})")
 
-        # Variable para recordar el último valor medido
+        # 2. FALLBACK EXTERNO (Si la DB estaba vacía o falló)
+        if not datos_cargados:
+            print("🦅 Modo Respaldo: Buscando historia en Dolarito...")
+            try:
+                datos = self.scraper_engine.cargar_historia_combinada()
+                if datos:
+                    self.datos_historicos_cache = datos
+                    self.after(0, self.render_historia_inicial)
+            except: pass
+
+        # 3. BUCLE VIGILANTE (Solo para detectar el cierre de HOY)
         ultimo_gap_visto = -999.0 
-
-        # 2. BUCLE VIGILANTE
         while True:
             ahora = datetime.now()
             
-            # --- VENTANA DE CIERRE (17:30 a 18:15) ---
-            es_dia_operable = (0 <= ahora.weekday() <= 4) # Lun-Vie
-            # Minutos del día: 17:30 es 1050 min, 18:15 es 1095 min
+            # Ventana de Cierre (17:30 - 18:15)
+            es_dia_operable = (0 <= ahora.weekday() <= 4)
             minutos_dia = ahora.hour * 60 + ahora.minute
             ventana_abierta = (1050 <= minutos_dia <= 1095)
 
             if es_dia_operable and ventana_abierta:
-                print(f"🦅 Verificando cierre de mercado ({ahora.strftime('%H:%M')})...")
+                # Usamos el scraper solo para validar el cierre oficial del mercado
                 try:
                     datos = self.scraper_engine.cargar_historia_combinada()
-                    
                     if datos:
-                        # El dato más reciente está en la posición 0 (porque invertimos la lista antes)
                         gap_actual = datos[0].get("gap", 0.0)
-                        
-                        # --- LA PRUEBA DE ESTABILIDAD ---
                         if gap_actual == ultimo_gap_visto:
-                            print(f"✅ Valor estabilizado en {gap_actual:.2f}%. Mercado Cerrado.")
-                            
-                            # Actualizamos UI por última vez hoy
-                            self.datos_historicos_cache = datos
-                            self.after(0, self.render_historia_inicial)
-                            
-                            # Reiniciamos la variable para mañana
-                            ultimo_gap_visto = -999.0
-                            
-                            # A DORMIR: Hasta mañana (12 horas)
-                            time.sleep(43200) 
+                            print(f"✅ Mercado Cerrado (Estable en {gap_actual:.2f}%).")
+                            time.sleep(43200) # Dormir hasta mañana
                         else:
-                            print(f"📉 El valor cambió ({ultimo_gap_visto:.2f}% -> {gap_actual:.2f}%). Mercado aún ajustando...")
                             ultimo_gap_visto = gap_actual
-                            # Esperamos 5 minutos para ver si se queda quieto
                             time.sleep(300) 
                     else:
-                        time.sleep(300) # Error de lectura, reintenta
-                        
-                except Exception as e:
-                    print(f"⚠️ Error en ciclo de cierre: {e}")
+                        time.sleep(300)
+                except:
                     time.sleep(300)
             else:
-                # Si no es hora de cierre, solo miramos el reloj cada 10 min
-                # (Consumo casi nulo)
                 time.sleep(600)
 
     def render_historia_inicial(self):
@@ -274,13 +297,17 @@ class DashboardView(ctk.CTkFrame):
             if not self.datos_historicos_cache:
                 return
 
-            for i, dato in enumerate(self.datos_historicos_cache):
-                if i >= 4: break # El 5to espacio es para el "VIVO"
+            # Tomamos los últimos 4 registros disponibles
+            datos_a_mostrar = self.datos_historicos_cache[-4:] 
+
+            for i, dato in enumerate(datos_a_mostrar):
+                if i >= 4: break 
                 
                 frame, lbl_dia, lbl_gap = self.market_widgets[i]
                 
-                # Extraemos el día (ej: "Martes" de "Martes, 16 de...")
-                dia_semana = dato["fecha"].split(',')[0] 
+                # El dato ya viene formateado sea de DB o Scraper
+                # De DB viene como "LUN", de Scraper como "Lunes..."
+                dia_texto = dato["fecha"].split(',')[0].upper()[:3]
                 gap_val = dato["gap"]
                 
                 # Colores de tendencia
@@ -288,7 +315,7 @@ class DashboardView(ctk.CTkFrame):
                 if gap_val > 4.5: color = "#e74c3c" # Eufórico
                 elif gap_val < 2.5: color = "#2ecc71" # Oportunidad
                 
-                lbl_dia.configure(text=dia_semana.upper()[:3]) # Muestra MAR, MIE, JUE...
+                lbl_dia.configure(text=dia_texto)
                 lbl_gap.configure(text=f"{gap_val:.2f}%", text_color=color)
 
     def background_dolarito_updater(self):
@@ -308,7 +335,6 @@ class DashboardView(ctk.CTkFrame):
             self.actualizar_tablero_estrategico()
             
         except Exception as e: 
-            # Es bueno imprimir el error para saber si falla algo silencioso
             print(f"Error en loop visual: {e}") 
             pass
         self.after(5000, self.auto_scan_loop)
