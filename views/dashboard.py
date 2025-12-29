@@ -4,10 +4,12 @@ import time
 import sqlite3
 from datetime import datetime
 from utils.ui_components import CustomDialog, ModernModal
-# IMPORTS DE TUS NUEVOS MÓDULOS
+
+# IMPORTS DE TUS MÓDULOS
 from views.dashboard_modules.scrapers import DolaritoScraper
 from views.dashboard_modules.logic import DashboardLogic
 from views.dashboard_modules.historical_analyzer import HistoricalAnalyzer
+from views.dashboard_modules.ccl_manager import CCLManager
 from views.dashboard_modules.historical_widgets import HistoricalTimelineWidget
 
 class DashboardView(ctk.CTkFrame):
@@ -16,17 +18,20 @@ class DashboardView(ctk.CTkFrame):
         self.controller = controller
         
         # INICIALIZAR LOS MÓDULOS
+        self.ccl_manager = CCLManager(self.controller.conn)
         self.scraper_engine = DolaritoScraper()
         self.logic_engine = DashboardLogic(self.controller.api_client, self.controller.cursor, self.controller.conn)
         self.historical_analyzer = HistoricalAnalyzer(self.controller.conn)
+        self.ccl_status = "VIVO"
 
-        # TABLA DE BASE DE DATOS (Mantenida por seguridad)
+        # TABLA DE BASE DE DATOS
         try:
             self.controller.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS p2p_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     fecha TEXT, hora TEXT, usdt_buy_p5 REAL, usdt_sell_p5 REAL,
-                    mep REAL, ccl REAL, gap_ccl REAL
+                    mep REAL, ccl REAL, gap_ccl REAL,
+                    ccl_tipo TEXT DEFAULT 'VIVO'
                 )
             """)
             self.controller.conn.commit()
@@ -44,224 +49,294 @@ class DashboardView(ctk.CTkFrame):
         
         # --- HEADER ---
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=20, pady=5)
+        header.pack(fill="x", padx=20, pady=(5,2))
 
-        # Título
         ctk.CTkLabel(
             header, 
-            text="TABLERO DE MANDO (V12.0 - Persistente Modular)", 
+            text="TABLERO DE MANDO", 
             font=("Arial", 22, "bold"), 
             text_color="#3498db"
         ).pack(side="left")
 
-        # Contenedor de botones (CREAR PRIMERO)
-        btn_box = ctk.CTkFrame(header, fg_color="transparent")
-        btn_box.pack(side="right")
-
-        # Selector de moneda
-        self.radar_currency = ctk.CTkOptionMenu(
-            btn_box, 
-            values=["ARS", "PEN"], 
-            width=70, 
-            command=self.update_radar_labels
-        )
-        self.radar_currency.set("ARS")
-        self.radar_currency.pack(side="left", padx=5)
-
-        # Botón de Blacklist
-        ctk.CTkButton(
-            btn_box, 
-            text="🚫 BLACKLIST", 
-            width=100, 
-            fg_color="#c0392b", 
-            hover_color="#922b21",
-            command=self.abrir_blacklist_manager
-        ).pack(side="left", padx=5)
-
-        # --- PATRIMONIO ---
-        self.patrimonio_frame = ctk.CTkFrame(self, fg_color="#1a1a1a", border_width=1, border_color="#333")
-        self.patrimonio_frame.pack(fill="x", padx=20, pady=(10, 5))
-        self.patrimonio_frame.grid_columnconfigure((0,1,2), weight=1)
+        # --- FASE 1: BARRA DE ESTADO (Compacta y Alineada) ---
+        self.patrimonio_frame = ctk.CTkFrame(self, fg_color="transparent", height=45)
+        self.patrimonio_frame.pack(fill="x", padx=20, pady=(0, 10)) # Un poco de aire abajo
         
-        self.lbl_total_ars = self.mk_stat_card(self.patrimonio_frame, 0, "TOTAL ARS", "$ ---", "#2cc985")
-        self.lbl_total_usdt = self.mk_stat_card(self.patrimonio_frame, 1, "STOCK USDT", "---", "#e3a319")
-        self.lbl_equity = self.mk_stat_card(self.patrimonio_frame, 2, "PATRIMONIO TOTAL", "US$ ---", "#3498db")
+        # Función auxiliar para crear celdas idénticas (Título + Valor)
+        def crear_celda(parent, titulo, color_val):
+            frame = ctk.CTkFrame(parent, fg_color="transparent")
+            frame.pack(side="left", fill="y", expand=True) # expand=True distribuye el espacio
+            
+            ctk.CTkLabel(frame, text=titulo, font=("Arial", 13, "bold"), text_color="gray").pack(side="left", padx=(0, 5))
+            lbl = ctk.CTkLabel(frame, text="---", font=("Arial", 16, "bold"), text_color=color_val)
+            lbl.pack(side="left")
+            return lbl
 
-        # --- LÍNEA DE TIEMPO CLÁSICA (Scraper Dolarito + Turno en Vivo) ---
-        # ⚠️ MANTENER ESTO - Se usa en render_escaneo() para mostrar el turno actual
+        def crear_separador(parent):
+            sep = ctk.CTkFrame(parent, width=2, height=18, fg_color="#333")
+            sep.pack(side="left", pady=10)
+
+        # 1. LIQUIDEZ
+        self.lbl_total_ars = crear_celda(self.patrimonio_frame, "LIQUIDEZ:", "#2cc985")
+        crear_separador(self.patrimonio_frame)
+
+        # 2. STOCK
+        self.lbl_total_usdt = crear_celda(self.patrimonio_frame, "STOCK USDT:", "#e3a319")
+        crear_separador(self.patrimonio_frame)
+
+        # 3. PPP + BOTÓN (Celda especial)
+        frame_ppp = ctk.CTkFrame(self.patrimonio_frame, fg_color="transparent")
+        frame_ppp.pack(side="left", fill="y", expand=True)
+        
+        ctk.CTkLabel(frame_ppp, text="PPP:", font=("Arial", 13, "bold"), text_color="gray").pack(side="left", padx=(0, 5))
+        self.lbl_ppp_radar = ctk.CTkLabel(frame_ppp, text="$ ---", font=("Arial", 15, "bold"), text_color="white")
+        self.lbl_ppp_radar.pack(side="left")
+        
+        ctk.CTkButton(frame_ppp, text="⟳", width=25, height=25, fg_color="transparent", hover_color="#333", 
+                      font=("Arial", 16), text_color="#c0392b", command=self.confirmar_reset_ppp).pack(side="left", padx=(5, 0))
+
+        crear_separador(self.patrimonio_frame)
+
+        # 4. PATRIMONIO
+        self.lbl_equity = crear_celda(self.patrimonio_frame, "PATRIMONIO:", "#3498db")
+
+        # --- FASE 2: CANJE MEP/CCL (Compacto) ---
         self.timeline_frame = ctk.CTkFrame(self, fg_color="#0f0f0f", border_width=1, border_color="#333")
-        self.timeline_frame.pack(fill="x", padx=20, pady=5)
-        self.timeline_frame.grid_columnconfigure((0,1,2,3,4), weight=1)
+        self.timeline_frame.pack(fill="x", padx=20, pady=(5,3))
         
-        self.market_widgets = []  # ⚠️ NO BORRAR - Se usa en render_escaneo()
+        timeline_header = ctk.CTkFrame(self.timeline_frame, fg_color="transparent")
+        timeline_header.pack(fill="x", padx=10, pady=(5,2))
+        ctk.CTkLabel(timeline_header, text="CANJE MEP/CCL", font=("Arial", 11, "bold"), text_color="#888").pack(side="left")
+        
+        timeline_grid = ctk.CTkFrame(self.timeline_frame, fg_color="transparent")
+        timeline_grid.pack(fill="x", padx=5, pady=(0,5))
+        timeline_grid.grid_columnconfigure((0,1,2,3,4), weight=1)
+        
+        self.market_widgets = [] 
         
         for i in range(5):
-            f = ctk.CTkFrame(self.timeline_frame, fg_color="#1a1a1a", corner_radius=6, border_width=1, border_color="#333")
-            f.grid(row=0, column=i, padx=4, pady=5, sticky="ew")
+            f = ctk.CTkFrame(timeline_grid, fg_color="#1a1a1a", corner_radius=6, border_width=1, border_color="#333")
+            f.grid(row=0, column=i, padx=3, pady=2, sticky="ew")
             lbl_dia = ctk.CTkLabel(f, text="---", font=("Arial", 11, "bold"), text_color="gray")
-            lbl_dia.pack(pady=(5,0))
-            lbl_gap = ctk.CTkLabel(f, text="---%", font=("Arial", 26, "bold"), text_color="white")
-            lbl_gap.pack(pady=(0,5))
+            lbl_dia.pack(pady=(4,0))
+            lbl_gap = ctk.CTkLabel(f, text="---%", font=("Arial", 24, "bold"), text_color="white")
+            lbl_gap.pack(pady=(0,4))
             self.market_widgets.append((f, lbl_dia, lbl_gap))
-        
-        # Separador visual
-        separator = ctk.CTkFrame(self, height=2, fg_color="#333")
-        separator.pack(fill="x", padx=40, pady=10)
-        
-        # --- LÍNEA DE TIEMPO NUEVA (Histórico Real de P2P BD) ---
+
+        # --- FASE 3: MERCADO (WIDGET EXTERNO) ---
+        # Esto llama al diseño nuevo (Stats Izquierda | Cards Derecha)
         self.historical_timeline = HistoricalTimelineWidget(self, self.historical_analyzer)
-        self.historical_timeline.pack(fill="x", padx=20, pady=5)
+        self.historical_timeline.pack(fill="x", padx=20, pady=(3,5))
 
-        # --- INICIO MOTORES ---
-        self.after(1000, self.auto_scan_loop)
-        threading.Thread(target=self.cargar_historia_combinada, daemon=True).start()
-        threading.Thread(target=self.background_dolarito_updater, daemon=True).start()
-
-        # --- RADAR ---
+        # --- FASE 4: GESTIÓN Y DECISIÓN ---
         self.radar_frame = ctk.CTkFrame(self, fg_color="#101010", border_width=1, border_color="#333")
-        self.radar_frame.pack(fill="x", padx=20, pady=10)
+        self.radar_frame.pack(fill="x", padx=20, pady=(5,8))
         
         top_ctrl = ctk.CTkFrame(self.radar_frame, fg_color="transparent")
-        top_ctrl.pack(fill="x", padx=10, pady=(5,5))
-        ctk.CTkLabel(top_ctrl, text="MATRIZ DE PROBABILIDAD", font=("Arial", 14, "bold"), text_color="#888").pack(side="left")
-        self.lbl_scanner_status = ctk.CTkLabel(top_ctrl, text="Iniciando...", text_color="gray", font=("Consolas", 11))
+        top_ctrl.pack(fill="x", padx=10, pady=(5,3))
+        ctk.CTkLabel(top_ctrl, text="MATRIZ DE DECISIÓN", font=("Arial", 11, "bold"), text_color="#888").pack(side="left")
+        self.lbl_scanner_status = ctk.CTkLabel(top_ctrl, text="Iniciando...", text_color="gray", font=("Consolas", 10))
         self.lbl_scanner_status.pack(side="right", padx=10)
 
+        # Precios de mercado
         self.cards_frame = ctk.CTkFrame(self.radar_frame, fg_color="transparent")
-        self.cards_frame.pack(fill="x", padx=10, pady=5)
+        self.cards_frame.pack(fill="x", padx=10, pady=(0,5))
         self.cards_frame.grid_columnconfigure((0,1,2,3,4), weight=1, uniform="x")
         
         self.card_blue = self.mk_dolarito_card(0, "BLUE")
         self.card_mep = self.mk_dolarito_card(1, "MEP")
         self.card_ccl = self.mk_dolarito_card(2, "CCL")
-        self.card_p2p_ask = self.mk_dolarito_card(4, "MEJOR VENTA")  # 🔄 Columna 4 (derecha)
-        self.card_p2p_bid = self.mk_dolarito_card(3, "MEJOR COMPRA") # 🔄 Columna 3 (izquierda)
+        self.card_p2p_bid = self.mk_dolarito_card(3, "MEJOR COMPRA")
+        self.card_p2p_ask = self.mk_dolarito_card(4, "MEJOR VENTA")
 
-        # --- DECISIÓN ---
-        self.decision_frame = ctk.CTkFrame(self.radar_frame, fg_color="transparent")
-        self.decision_frame.pack(fill="x", padx=10, pady=10)
-        self.decision_frame.grid_columnconfigure((0,1), weight=1, uniform="decision")
-
-        self.buy_signal_frame = ctk.CTkFrame(self.decision_frame, fg_color="#1a1a1a", corner_radius=8, border_width=1, border_color="#333")
-        self.buy_signal_frame.grid(row=0, column=0, padx=(0,5), sticky="nsew")
-        ctk.CTkLabel(self.buy_signal_frame, text="TU SITUACIÓN (CONTABLE)", font=("Arial", 11, "bold"), text_color="gray").pack(pady=(10,5))
-        self.lbl_buy_action = ctk.CTkLabel(self.buy_signal_frame, text="---", font=("Arial", 18, "bold"), text_color="white")
-        self.lbl_buy_action.pack(pady=5)
-        self.lbl_buy_detail = ctk.CTkLabel(self.buy_signal_frame, text="...", font=("Arial", 12), text_color="gray")
-        self.lbl_buy_detail.pack(pady=(0,10))
-
-        self.sell_signal_frame = ctk.CTkFrame(self.decision_frame, fg_color="#1a1a1a", corner_radius=8, border_width=1, border_color="#333")
-        self.sell_signal_frame.grid(row=0, column=1, padx=(5,0), sticky="nsew")
-        ctk.CTkLabel(self.sell_signal_frame, text="CLIMA DE MERCADO (CANJE)", font=("Arial", 11, "bold"), text_color="gray").pack(pady=(10,5))
-        self.lbl_sell_action = ctk.CTkLabel(self.sell_signal_frame, text="---", font=("Arial", 18, "bold"), text_color="white")
-        self.lbl_sell_action.pack(pady=5)
-        self.lbl_sell_detail = ctk.CTkLabel(self.sell_signal_frame, text="...", font=("Arial", 12), text_color="gray")
-        self.lbl_sell_detail.pack(pady=(0,10))
+        # CLIMA DE MERCADO
+        self.clima_frame = ctk.CTkFrame(self.radar_frame, fg_color="#1a1a1a", corner_radius=8, border_width=2, border_color="#3498db")
+        self.clima_frame.pack(fill="x", padx=10, pady=(5,8))
         
-        # --- ÁREA PPP ---
-        self.ppp_container = ctk.CTkFrame(self.radar_frame, fg_color="transparent")
-        self.ppp_container.pack(pady=(5, 10))
-        self.lbl_ppp_radar = ctk.CTkLabel(self.ppp_container, text="PPP: $ ---", font=("Arial", 16, "bold"), text_color="white")
-        self.lbl_ppp_radar.pack(side="left", padx=(0, 15))
-        ctk.CTkButton(self.ppp_container, text="🔄 RESET CICLO", width=100, height=28, fg_color="#444", hover_color="#c0392b", command=self.confirmar_reset_ppp).pack(side="left")
-
-        # --- MATRIZ ---
-        self.matrix_frame = ctk.CTkFrame(self.radar_frame, fg_color="transparent")
-        self.matrix_frame.pack(fill="x", padx=10, pady=(0, 10))
-        self.matrix_frame.grid_columnconfigure((0,1,2,3), weight=1, uniform="strat")  # 🔥 4 COLUMNAS
-
-        self.strat_a = self.mk_strategy_card(0, "MAKER / MAKER", "Spread + Skew", "#27ae60")
-        self.strat_b = self.mk_strategy_card(1, "MAKER / MAKER", "Spread + Skew", "#3498db")
-        self.strat_c_buy = self.mk_strategy_card(2, "PEPITA COMPRA", "Arbitraje", "#f39c12")    # 🔥 NUEVA
-        self.strat_c_sell = self.mk_strategy_card(3, "PEPITA VENTA", "Arbitraje", "#9b59b6")   # 🔥 NUEVA
-
-        # --- SIMULADOR ---
-        self.sim_frame = ctk.CTkFrame(self.radar_frame, fg_color="#121212", border_width=1, border_color="#333", corner_radius=10)
-        self.sim_frame.pack(fill="x", padx=10, pady=(20, 5))
+        clima_grid = ctk.CTkFrame(self.clima_frame, fg_color="transparent")
+        clima_grid.pack(fill="x", padx=15, pady=10)
+        clima_grid.grid_columnconfigure((0,1), weight=1)
         
-        sim_inner = ctk.CTkFrame(self.sim_frame, fg_color="transparent")
-        sim_inner.pack(pady=12)
+        situacion_box = ctk.CTkFrame(clima_grid, fg_color="#0d0d0d", corner_radius=6)
+        situacion_box.grid(row=0, column=0, padx=(0,5), sticky="nsew")
+        ctk.CTkLabel(situacion_box, text="TU SITUACIÓN", font=("Arial", 10, "bold"), text_color="gray").pack(pady=(8,2))
+        self.lbl_buy_action = ctk.CTkLabel(situacion_box, text="---", font=("Arial", 18, "bold"), text_color="white")
+        self.lbl_buy_action.pack(pady=3)
+        self.lbl_buy_detail = ctk.CTkLabel(situacion_box, text="...", font=("Arial", 11), text_color="gray")
+        self.lbl_buy_detail.pack(pady=(0,8))
+        
+        mercado_box = ctk.CTkFrame(clima_grid, fg_color="#0d0d0d", corner_radius=6)
+        mercado_box.grid(row=0, column=1, padx=(5,0), sticky="nsew")
+        ctk.CTkLabel(mercado_box, text="CLIMA DE MERCADO", font=("Arial", 10, "bold"), text_color="gray").pack(pady=(8,2))
+        self.lbl_sell_action = ctk.CTkLabel(mercado_box, text="---", font=("Arial", 20, "bold"), text_color="white")
+        self.lbl_sell_action.pack(pady=3)
+        self.lbl_sell_detail = ctk.CTkLabel(mercado_box, text="...", font=("Arial", 12), text_color="gray")
+        self.lbl_sell_detail.pack(pady=(0,8))
 
-        ctk.CTkLabel(sim_inner, text="COMPRA", font=("Arial", 11, "bold"), text_color="#2ecc71").pack(side="left", padx=5)
-        self.entry_sim_buy = ctk.CTkEntry(sim_inner, width=100, justify="center", fg_color="#2b2b2b", border_width=0, font=("Arial", 13, "bold"))
+        # --- FASE 5: EJECUCIÓN Y HERRAMIENTAS ---
+        exec_frame = ctk.CTkFrame(self.radar_frame, fg_color="transparent")
+        exec_frame.pack(fill="x", padx=10, pady=(0,8))
+        exec_frame.grid_columnconfigure((0,1,2,3), weight=1)
+
+        self.strat_a = self.mk_strategy_card_compact(exec_frame, 0, "MAKER/MAKER")
+        self.strat_b = self.mk_strategy_card_compact(exec_frame, 1, "MAKER COMPRA")
+        self.strat_c_buy = self.mk_strategy_card_compact(exec_frame, 2, "SIN SETUP")
+        
+        # VENTA vs PPP con botón BAN integrado
+        venta_box = ctk.CTkFrame(exec_frame, fg_color="#1a1a1a", corner_radius=6, border_width=1, border_color="#333")
+        venta_box.grid(row=0, column=3, padx=3, sticky="nsew")
+        
+        venta_header = ctk.CTkFrame(venta_box, fg_color="transparent")
+        venta_header.pack(fill="x", padx=5, pady=(8,2)) # Mismo padding que las otras
+        
+        # 1. Botón a la derecha (Primero para que se ancle al borde)
+        ctk.CTkButton(
+            venta_header,
+            text="🚫",
+            width=28,
+            height=22,
+            font=("Arial", 14),
+            fg_color="#c0392b",
+            hover_color="#922b21",
+            command=self.abrir_blacklist_manager
+        ).pack(side="right")
+        
+        # 2. Título CENTRADO (Con expand=True ocupa el centro)
+        ctk.CTkLabel(
+            venta_header, 
+            text="VENTA vs PPP", 
+            font=("Arial", 11, "bold"), # Aumentado a 11
+            text_color="gray"
+        ).pack(side="left", expand=True) 
+        
+        # Valor aumentado a 20
+        self.strat_c_sell = ctk.CTkLabel(venta_box, text="--- %", font=("Arial", 20, "bold"), text_color="white")
+        self.strat_c_sell.pack(pady=(0,8))
+
+        # CALCULADORA (AUMENTADA)
+        calc_frame = ctk.CTkFrame(self.radar_frame, fg_color="#121212", border_width=1, border_color="#333", corner_radius=6)
+        calc_frame.pack(fill="x", padx=10, pady=(0,8))
+        
+        # Título más grande
+        ctk.CTkLabel(calc_frame, text="SIMULADOR DE RIESGO", font=("Arial", 12, "bold"), text_color="gray").pack(pady=(8,5))
+        
+        calc_inner = ctk.CTkFrame(calc_frame, fg_color="transparent")
+        calc_inner.pack(pady=(0,8))
+
+        # COMPRA
+        ctk.CTkLabel(calc_inner, text="COMPRA", font=("Arial", 12, "bold"), text_color="#2ecc71").pack(side="left", padx=5)
+        # Input más grande (font 14) y un poco más ancho (100)
+        self.entry_sim_buy = ctk.CTkEntry(calc_inner, width=100, justify="center", fg_color="#2b2b2b", border_width=0, font=("Arial", 14, "bold"))
         self.entry_sim_buy.pack(side="left", padx=2)
         self.entry_sim_buy.bind("<KeyRelease>", self.calcular_simulacion)
         
-        self.sim_buy_mode = ctk.CTkOptionMenu(sim_inner, values=["Maker", "Taker"], width=80, fg_color="#333", button_color="#444", command=self.calcular_simulacion)
+        self.sim_buy_mode = ctk.CTkOptionMenu(calc_inner, values=["Maker", "Taker"], width=75, fg_color="#333", button_color="#444", command=self.calcular_simulacion)
         self.sim_buy_mode.set("Maker")
         self.sim_buy_mode.pack(side="left", padx=2)
 
-        ctk.CTkLabel(sim_inner, text="➜", font=("Arial", 16), text_color="#555").pack(side="left", padx=15)
+        # FLECHA
+        ctk.CTkLabel(calc_inner, text="→", font=("Arial", 20), text_color="#555").pack(side="left", padx=10)
 
-        ctk.CTkLabel(sim_inner, text="VENTA", font=("Arial", 11, "bold"), text_color="#e74c3c").pack(side="left", padx=5)
-        self.entry_sim_sell = ctk.CTkEntry(sim_inner, width=100, justify="center", fg_color="#2b2b2b", border_width=0, font=("Arial", 13, "bold"))
+        # VENTA
+        ctk.CTkLabel(calc_inner, text="VENTA", font=("Arial", 12, "bold"), text_color="#e74c3c").pack(side="left", padx=5)
+        # Input más grande
+        self.entry_sim_sell = ctk.CTkEntry(calc_inner, width=100, justify="center", fg_color="#2b2b2b", border_width=0, font=("Arial", 14, "bold"))
         self.entry_sim_sell.pack(side="left", padx=2)
         self.entry_sim_sell.bind("<KeyRelease>", self.calcular_simulacion)
         
-        self.sim_sell_mode = ctk.CTkOptionMenu(sim_inner, values=["Maker", "Taker"], width=80, fg_color="#333", button_color="#444", command=self.calcular_simulacion)
+        self.sim_sell_mode = ctk.CTkOptionMenu(calc_inner, values=["Maker", "Taker"], width=75, fg_color="#333", button_color="#444", command=self.calcular_simulacion)
         self.sim_sell_mode.set("Maker")
         self.sim_sell_mode.pack(side="left", padx=2)
 
-        ctk.CTkLabel(sim_inner, text="=", font=("Arial", 16), text_color="#555").pack(side="left", padx=15)
-        self.lbl_sim_result = ctk.CTkLabel(sim_inner, text="--- %", font=("Arial", 18, "bold"), text_color="gray")
+        # IGUAL Y RESULTADO
+        ctk.CTkLabel(calc_inner, text="=", font=("Arial", 20), text_color="#555").pack(side="left", padx=10)
+        # Resultado GIGANTE (24)
+        self.lbl_sim_result = ctk.CTkLabel(calc_inner, text="--- %", font=("Arial", 24, "bold"), text_color="gray")
         self.lbl_sim_result.pack(side="left", padx=5)
 
         # --- FOOTER ---
-        self.f_sesion = ctk.CTkFrame(self, fg_color="#2b2b2b", border_color="#e3a319", border_width=2, corner_radius=10)
-        self.f_sesion.pack(fill="x", padx=20, pady=(10, 10))
-        self.f_sesion.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(self.f_sesion, text="RENDIMIENTO TURNO ACTUAL", font=("Arial", 11, "bold"), text_color="#e3a319").grid(row=0, column=0, pady=(10, 2))
-        self.lbl_gan_sesion = ctk.CTkLabel(self.f_sesion, text="---", font=("Arial", 26, "bold"))
-        self.lbl_gan_sesion.grid(row=1, column=0, pady=2)
-        self.lbl_gan_sesion_usdt = ctk.CTkLabel(self.f_sesion, text="--- USDT", font=("Arial", 12), text_color="#aaaaaa")
-        self.lbl_gan_sesion_usdt.grid(row=2, column=0, pady=(0, 10))
+        self.f_sesion = ctk.CTkFrame(self, fg_color="#2b2b2b", border_color="#e3a319", border_width=2, corner_radius=8)
+        self.f_sesion.pack(fill="x", padx=20, pady=(5, 20)) # Un poco más de aire abajo del todo
+        
+        sesion_content = ctk.CTkFrame(self.f_sesion, fg_color="transparent")
+        sesion_content.pack(pady=10) # Más padding interno
+        
+        # Título
+        ctk.CTkLabel(
+            sesion_content, 
+            text="TURNO ACTUAL:", 
+            font=("Arial", 13, "bold"), # Aumentado a 14
+            text_color="#e3a319"
+        ).pack(side="left", padx=(10, 10))
+        
+        # Valor en Pesos (GIGANTE)
+        self.lbl_gan_sesion = ctk.CTkLabel(
+            sesion_content, 
+            text="---", 
+            font=("Arial", 16, "bold") # Aumentado a 30
+        )
+        self.lbl_gan_sesion.pack(side="left", padx=5)
+        
+        # Valor en USDT
+        self.lbl_gan_sesion_usdt = ctk.CTkLabel(
+            sesion_content, 
+            text="--- USDT", 
+            font=("Arial", 14, "bold"), # Aumentado a 16 Bold
+            text_color="#aaaaaa"
+        )
+        self.lbl_gan_sesion_usdt.pack(side="left", padx=(10, 10))
+        
+        # --- INICIO MOTORES ---
+        self.after(1000, self.auto_scan_loop)
+        threading.Thread(target=self.cargar_historia_combinada, daemon=True).start()
+        threading.Thread(target=self.background_dolarito_updater, daemon=True).start()
 
     def render_historia_inicial(self):
-            """ Pinta los GAPs históricos calculados en los 4 espacios de la izquierda """
-            if not self.datos_historicos_cache:
-                return
+        if not self.datos_historicos_cache:
+            return
 
-            for i, dato in enumerate(self.datos_historicos_cache):
-                if i >= 4: break # El 5to espacio es para el "VIVO"
-                
-                frame, lbl_dia, lbl_gap = self.market_widgets[i]
-                
-                # Extraemos el día (ej: "Martes" de "Martes, 16 de...")
-                dia_semana = dato["fecha"].split(',')[0] 
-                gap_val = dato["gap"]
-                
-                # Colores de tendencia
-                color = "white"
-                if gap_val > 4.5: color = "#e74c3c" # Eufórico
-                elif gap_val < 2.5: color = "#2ecc71" # Oportunidad
-                
-                lbl_dia.configure(text=dia_semana.upper()[:3]) # Muestra MAR, MIE, JUE...
-                lbl_gap.configure(text=f"{gap_val:.2f}%", text_color=color)
+        for i, dato in enumerate(self.datos_historicos_cache):
+            if i >= 4: break 
+            
+            frame, lbl_dia, lbl_gap = self.market_widgets[i]
+            
+            dia_texto = dato["fecha"].split(',')[0].upper()[:3]
+            gap_val = dato["gap"]
+            
+            color = "#3498db"
+            
+            if gap_val > 2.0: 
+                color = "#e74c3c"
+            elif gap_val < 0.0: 
+                color = "#2ecc71"
+            
+            lbl_dia.configure(text=dia_texto)
+            lbl_gap.configure(text=f"{gap_val:.2f}%", text_color=color)
 
     def background_dolarito_updater(self):
         while True:
-            datos = self.scraper_engine.obtener_precios_vivo()
-            if datos:
-                self.cached_blue, self.cached_blue_pct = datos["blue"]
-                self.cached_mep, self.cached_mep_pct = datos["mep"]
-                self.cached_ccl, self.cached_ccl_pct = datos["ccl"]
+            datos_precios = self.scraper_engine.obtener_precios_vivo()
+            if datos_precios:
+                self.cached_blue, self.cached_blue_pct = datos_precios["blue"]
+                self.cached_mep, self.cached_mep_pct = datos_precios["mep"]
+            
+            ccl_info = self.ccl_manager.obtener_ccl_inteligente(self.scraper_engine)
+            
+            self.cached_ccl = ccl_info['precio']
+            self.cached_ccl_pct = ccl_info.get('pct', "0.00%")
+            self.ccl_status = ccl_info['tipo']
+            
             time.sleep(60)
+
     def cargar_historia_combinada(self):
-        """
-        Carga datos históricos del scraper de Dolarito
-        (Sistema viejo - mantener para compatibilidad)
-        """
         print("📊 Iniciando carga de historia de Dolarito...")
         
         try:
-            # Cargar datos históricos del scraper
             historia = self.scraper_engine.cargar_historia_combinada()
             
             if historia:
                 self.historical_gaps = historia
                 print(f"✅ Historia cargada: {len(historia)} registros")
-                
-                # Actualizar los widgets de la línea de tiempo vieja
                 self.after(0, lambda: self.actualizar_timeline_viejo(historia))
             else:
                 print("⚠️ No se pudo cargar historia de Dolarito")
@@ -272,14 +347,9 @@ class DashboardView(ctk.CTkFrame):
             self.historical_gaps = []
 
     def actualizar_timeline_viejo(self, historia):
-        """
-        Actualiza la línea de tiempo vieja (primeros 4 widgets)
-        El 5to widget (market_widgets[-1]) se actualiza en render_escaneo
-        """
         try:
-            # Actualizar solo los primeros 4 (los históricos)
             for i, gap_data in enumerate(historia[:4]):
-                if i >= len(self.market_widgets) - 1:  # -1 porque el último es "HOY"
+                if i >= len(self.market_widgets) - 1:
                     break
                 
                 frame_hist, lbl_dia, lbl_gap = self.market_widgets[i]
@@ -287,14 +357,12 @@ class DashboardView(ctk.CTkFrame):
                 dia_texto = gap_data.get('fecha', '---')
                 gap_val = gap_data.get('gap', 0.0)
                 
-                # Colorear según valor
-                color = "#3498db"  # Azul por defecto
+                color = "#3498db"
                 if gap_val > 4.5:
-                    color = "#e74c3c"  # Rojo (GAP alto)
+                    color = "#e74c3c"
                 elif gap_val < 2.5:
-                    color = "#2ecc71"  # Verde (GAP bajo - oportunidad)
+                    color = "#2ecc71"
                 
-                # Extraer día de la semana del texto
                 try:
                     dia_semana = dia_texto.split()[0][:3].upper()
                 except:
@@ -306,7 +374,6 @@ class DashboardView(ctk.CTkFrame):
         except Exception as e:
             print(f"Error actualizando timeline viejo: {e}")
             
-    # --- LÓGICA DE ESCANEO ---
     def auto_scan_loop(self):
         if not self.is_scanning: 
             self.lanzar_escaneo()
@@ -315,20 +382,18 @@ class DashboardView(ctk.CTkFrame):
             self.update_stats_footer()
             self.actualizar_tablero_estrategico()
             
-            # ✅ MOVER DENTRO DEL TRY
+            # --- CAMBIO AQUÍ: Actualizar el widget nuevo ---
             if hasattr(self, 'historical_timeline'):
                 try:
                     self.historical_timeline.update_data()
                 except Exception as e:
-                    print(f"⚠️ Error actualizando timeline histórico: {e}")
-                    # No hacer nada más, seguir con el loop
+                    print(f"⚠️ Error widget histórico: {e}")
+            # -----------------------------------------------
             
         except Exception as e: 
             print(f"⚠️ Error en loop visual: {e}") 
         
-        # Reprogramar siempre (incluso si hubo error)
         self.after(5000, self.auto_scan_loop)
-        
 
     def lanzar_escaneo(self):
         if self.is_scanning: return
@@ -337,9 +402,9 @@ class DashboardView(ctk.CTkFrame):
         self.resultado_escaneo = None 
         
         self.controller.cursor.execute("SELECT value FROM config WHERE key='api_key'")
-        ak = self.controller.cursor.fetchone()
+        ak_res = self.controller.cursor.fetchone(); ak = ak_res[0] if ak_res else None
         self.controller.cursor.execute("SELECT value FROM config WHERE key='api_secret'")
-        ask = self.controller.cursor.fetchone()
+        ask_res = self.controller.cursor.fetchone(); ask = ask_res[0] if ask_res else None
         self.controller.cursor.execute("SELECT value FROM config WHERE key='maker_fee'")
         res_mf = self.controller.cursor.fetchone(); maker_fee = float(res_mf[0]) if res_mf else 0.0020
         self.controller.cursor.execute("SELECT value FROM config WHERE key='taker_fee'")
@@ -352,14 +417,14 @@ class DashboardView(ctk.CTkFrame):
 
         mep_ref = self.cached_mep; blue_ref = self.cached_blue; ccl_ref = self.cached_ccl
         mep_pct = self.cached_mep_pct; blue_pct = self.cached_blue_pct; ccl_pct = self.cached_ccl_pct
+        
+        ccl_state = self.ccl_status 
 
-        # LLAMADA AL CEREBRO EXTERNO
-        threading.Thread(target=self._wrapper_logic, args=(ak[0] if ak else None, ask[0] if ask else None, maker_fee, taker_fee, ppp_ars, saldo_ars, stock_usdt, saldo_usd_fiat, mep_ref, blue_ref, ccl_ref, mep_pct, blue_pct, ccl_pct), daemon=True).start()
+        threading.Thread(target=self._wrapper_logic, args=(ak, ask, maker_fee, taker_fee, ppp_ars, saldo_ars, stock_usdt, saldo_usd_fiat, mep_ref, blue_ref, ccl_ref, mep_pct, blue_pct, ccl_pct, ccl_state), daemon=True).start()
         
         self.after(100, self.verificar_resultado_escaneo)
 
     def _wrapper_logic(self, *args):
-        # Wrapper para conectar con el módulo logic
         resultado = self.logic_engine.ejecutar_escaneo(*args)
         self.resultado_escaneo = resultado
 
@@ -378,202 +443,125 @@ class DashboardView(ctk.CTkFrame):
             self.lbl_scanner_status.configure(text=f"Error: {msg[:15]}", text_color="red")
 
     def render_escaneo(self, blue, mep, ccl, market_ask_1, market_ask_p2p5, market_bid_1, market_bid_p2p5, 
-                        real_stock, gap_vivo, maker_fee, taker_fee, ppp, saldo_ars, stock_usdt, 
-                        saldo_usd_fiat, mep_pct, blue_pct, ccl_pct, gap_ccl, canje_vivo, 
-                        profit_c_buy, profit_c_sell):
-        
-        hora = datetime.now().strftime('%H:%M:%S')
-        self.lbl_scanner_status.configure(text=f"⚡ ACTIVO: {hora}", text_color="#2ecc71")
-        self.after(1000, lambda: self.lbl_scanner_status.configure(text_color="gray"))
-        
-        self.current_usdt_price = market_ask_1
-
-        # 1. PRECIOS
-        self.update_price_card(self.card_blue, blue, blue_pct)
-        self.update_price_card(self.card_mep, mep, mep_pct)
-        self.update_price_card(self.card_ccl, ccl, ccl_pct)
-        self.update_price_card(self.card_p2p_ask, market_bid_p2p5, None) # Muestra Fila 15
-        self.update_price_card(self.card_p2p_bid, market_ask_p2p5, None) # Muestra Fila 15
-        
-        self.lbl_ppp_radar.configure(text=f"PPP: $ {ppp:,.2f}")
-        self.lbl_total_ars.configure(text=f"$ {saldo_ars:,.0f}")
-        self.lbl_total_usdt.configure(text=f"{stock_usdt:,.2f}")
-        
-        # 2. LÓGICA DEL CUADRO VIVO (TERMÓMETRO CANJE CCL)
-        # Usamos el último cuadro de la lista (sea el 5to o el 6to)
-        frame_vivo, lbl_dia_vivo, lbl_gap_vivo = self.market_widgets[-1]
-        
-        frame_vivo.configure(fg_color="#1a1a1a", border_color="#3498db", border_width=2)
-        
-        # Lógica visual para el CANJE CCL/MEP
-        color_vivo = "white"
-        if canje_vivo > 4.50: color_vivo = "#e74c3c"
-        elif canje_vivo < 2.50: color_vivo = "#2ecc71"
-        
-        lbl_dia_vivo.configure(text="HOY (CCL)", text_color="#3498db")
-        lbl_gap_vivo.configure(text=f"{canje_vivo:.2f}%", text_color=color_vivo)
-        
-        # 3. DECISION
-        if saldo_ars > 50000:
-            mejor_entrada = min(market_bid_1, market_ask_1)
-            modo_entrada = "(TAKER)" if market_ask_1 < market_bid_1 else "(MAKER)"
-            if ppp == 0: txt_act, col_act, det_act = f"INICIAR {modo_entrada}", "#27ae60", "Inicia Posición."
-            elif mejor_entrada < ppp: txt_act, col_act, det_act = "🟢 ACUMULAR", "#27ae60", f"Bajas PPP ({modo_entrada})."
-            elif mejor_entrada < ppp * 1.01: txt_act, col_act, det_act = "🔵 SUMAR VOLUMEN", "#2980b9", "Mantienes PPP."
-            else: txt_act, col_act, det_act = "ESPERAR", "gray", f"Mercado caro (${mejor_entrada:.0f})."
-        else: txt_act, col_act, det_act = "SIN LIQUIDEZ", "#333", "Carga ARS."
-        self.lbl_buy_action.configure(text=txt_act, text_color=col_act)
-        self.buy_signal_frame.configure(border_color=col_act)
-        self.lbl_buy_detail.configure(text=det_act)
-
-        # 4. CLIMA (Referencia GAP USDT vs MEP para saber si vender)
-        desvio = gap_vivo - 3.0
-        clima_txt = "Estable"; color_clima = "#3498db"
-        if gap_vivo > 0:
-            if desvio > 0.5: clima_txt = "Eufórico (Vender)"; color_clima = "#e74c3c"
-            elif desvio < -0.5: clima_txt = "Deprimido (Comprar)"; color_clima = "#2ecc71"
-        if stock_usdt > 10:
-            roi = (((market_ask_1 * (1 - maker_fee)) / ppp) - 1) * 100 if ppp > 0 else 0.0
-            if roi > 0.5: txt_sell, col_sell, det_sell = f"🟢 VENDER (+{roi:.1f}%)", "#2ecc71", f"Mercado {clima_txt}."
-            elif roi > -0.5: txt_sell, col_sell, det_sell = f"🔵 ROTAR ({roi:.1f}%)", "#2980b9", "Sales hecho."
-            else: txt_sell, col_sell, det_sell = f"🛑 HOLDEAR ({roi:.1f}%)", "#c0392b", f"Clima: {clima_txt}"
-        else: txt_sell, col_sell, det_sell = f"CLIMA: {clima_txt}", color_clima, f"Canje CCL: {gap_ccl:+.2f}%"
-        self.lbl_sell_action.configure(text=txt_sell, text_color=col_sell)
-        self.sell_signal_frame.configure(border_color=col_sell)
-        self.lbl_sell_detail.configure(text=det_sell)
-
-        # --- 1. SANEAMIENTO DE DATOS (Variables limpias para todos) ---
-        val_ask_1 = float(market_ask_1) if market_ask_1 else 0.0
-        val_ask_15 = float(market_ask_p2p5) if market_ask_p2p5 else 0.0
-
-        val_bid_1 = float(market_bid_1) if market_bid_1 else 0.0
-        val_bid_15 = float(market_bid_p2p5) if market_bid_p2p5 else 0.0
-
-        # A. IZQUIERDA: MAKER/MAKER (SPREAD + SKEW)
-        # ---------------------------------------------------------
-        if val_bid_15 > 0 and val_ask_15 > 0:
-            # ✅ SPREAD: Comprar en fila 15 (Maker) y Vender en fila 15 (Maker)
-            profit_a = ((val_ask_15 * (1 - maker_fee)) / (val_bid_15 * (1 + maker_fee)) - 1) * 100
+                            real_stock, gap_vivo, maker_fee, taker_fee, ppp, saldo_ars, stock_usdt, 
+                            saldo_usd_fiat, mep_pct, blue_pct, ccl_pct, gap_ccl, canje_vivo, 
+                            profit_c_buy, profit_c_sell, ccl_tipo):
             
-            # ✅ SKEW CORREGIDO: Distancia entre fila 1 y fila 15 del lado de VENTA (ASKs)
-            # Esto mide cuánto más caro está vender en fila 15 vs fila 1
-            skew_p2 = 0.0
-            if val_ask_1 > 0 and val_ask_15 > 0:  # 🔥 CORRECCIÓN: Ahora usa ASKs
-                skew_p2 = ((val_ask_15 / val_ask_1) - 1) * 100
+            hora = datetime.now().strftime('%H:%M:%S')
+            self.lbl_scanner_status.configure(text=f"⚡ ACTIVO: {hora}", text_color="#2ecc71")
+            self.after(1000, lambda: self.lbl_scanner_status.configure(text_color="gray"))
             
-            texto_final = f"Spr: {profit_a:+.2f}% | Sk: {skew_p2:.2f}%"
+            self.current_usdt_price = market_ask_1
+
+            # PRECIOS
+            self.update_price_card(self.card_blue, blue, blue_pct)
+            self.update_price_card(self.card_mep, mep, mep_pct)
             
-            # 🎨 Lógica de colores
-            col_a = "#e74c3c"  # Rojo por defecto
-            if profit_a > 1.5 and skew_p2 < 2.0: 
-                col_a = "#2ecc71"  # Verde: Setup ideal
-            elif profit_a > 0: 
-                col_a = "#f39c12"  # Amarillo: Rentable pero no óptimo
+            txt_ccl_extra = ""
+            if ccl_tipo == "CONGELADO":
+                txt_ccl_extra = " 🔒" 
             
-            self.strat_a.configure(text=texto_final, text_color=col_a)
-        else:
-            self.strat_a.configure(text="S/D", text_color="gray")
-
-        # ---------------------------------------------------------
-        # B. CENTRO: MAKER COMPRA (BRECHA)
-        # ---------------------------------------------------------
-        if val_bid_1 > 0 and val_bid_15 > 0:
-            dist_buy = (1 - (val_bid_15 / val_bid_1)) * 100
-            text_b = f"Brecha: {dist_buy:.2f}%"
-            
-            col_b = "#3498db"  # Azul neutro
-            if dist_buy > 0.8: 
-                col_b = "#2ecc71"  # Verde: Escalera pronunciada
-            elif dist_buy < 0.1: 
-                col_b = "#e74c3c"  # Rojo: Mercado plano
-            
-            self.strat_b.configure(text=text_b, text_color=col_b)
-            
-            # 🔥 Actualizamos el título de la tarjeta
-            try: 
-                # Accedemos al label del título (primer hijo del frame padre)
-                titulo_label = self.strat_b.master.winfo_children()[0]
-                if isinstance(titulo_label, ctk.CTkLabel):
-                    titulo_label.configure(text="MAKER COMPRA")
-            except Exception as e:
-                print(f"⚠️ No se pudo actualizar título B: {e}")
-        else:
-            self.strat_b.configure(text="S/D", text_color="gray")
-
-        # C. DERECHA: LA PEPITA (ARBITRAJE)
-        # ═══════════════════════════════════════════════════════════
-        # 🔥 PEPITA COMPRA: Compro barato (BID fila 1) → Revendo caro (ASK fila 15)
-        # ═══════════════════════════════════════════════════════════
-        if val_ask_15 > 0 and val_bid_1 > 0:  # 🔥 CORRECCIÓN: Ahora usa bid_1
-            # YO compro como TAKER en fila 1 (BID), YO vendo como MAKER en fila 15 (ASK)
-            profit_c_buy = ((val_ask_15 * (1 - maker_fee)) / (val_bid_1 * (1 + taker_fee)) - 1) * 100
-        else:
-            print("❌ Condición PEPITA COMPRA NO cumplida")
-            profit_c_buy = -99.9
-
-        # ═══════════════════════════════════════════════════════════
-        # PEPITAS DUALES (COMPRA Y VENTA SEPARADAS)
-        # ═══════════════════════════════════════════════════════════
-
-        UMBRAL_MIN = 0.3  # Mínimo para considerar viable
-
-        # 🔷 PEPITA COMPRA
-        if profit_c_buy >= UMBRAL_MIN:
-            tipo_buy = "💎 VIABLE"
-            color_buy = "#2ecc71"
-        else:
-            tipo_buy = "SIN SETUP"
-            color_buy = "gray"
-            profit_c_buy = max(profit_c_buy, -5.0)  # Limitar negativos
-
-        try:
-            self.strat_c_buy.master.winfo_children()[0].configure(text=tipo_buy)
-            self.update_strat_card(self.strat_c_buy, profit_c_buy, "Mín: 0.3%")
-        except Exception as e:
-            print(f"⚠️ Error actualizando PEPITA COMPRA: {e}")
-
-        # 🔶 PEPITA VENTA
-        if profit_c_sell == -999.0:
-            # No hay PPP definido
-            tipo_sell = "SIN PPP"
-            color_sell = "gray"
-            profit_c_sell = 0.0
-        elif profit_c_sell >= 1.0:
-            # Ganancia mayor a 1%
-            tipo_sell = "💎 VIABLE"
-            color_sell = "#2ecc71"
-        elif profit_c_sell >= 0.3:
-            # Ganancia marginal
-            tipo_sell = "⚠️ MARGINAL"
-            color_sell = "#f39c12"
-        elif profit_c_sell >= 0.0:
-            # Break-even o ganancia mínima
-            tipo_sell = "🔵 NEUTRO"
-            color_sell = "#3498db"
-        else:
-            # Pérdida
-            tipo_sell = "🛑 HOLDEAR"
-            color_sell = "#e74c3c"
-            profit_c_sell = max(profit_c_sell, -5.0)  # Limitar display
-
-        try:
-            # Actualizar título dinámico
-            ppp_actual = self.controller.obtener_ppp("ARS")
-            if ppp_actual > 0:
-                titulo_label = self.strat_c_sell.master.winfo_children()[0]
-                titulo_label.configure(text=f"VENTA vs PPP (${ppp_actual:.0f})")
+            self.card_ccl.lbl_val.configure(text=f"${ccl:,.2f}{txt_ccl_extra}")
+            if ccl_tipo == "CONGELADO":
+                self.card_ccl.pill.configure(fg_color="#e67e22")
+                self.card_ccl.lbl_pct.configure(text="Ref. Viernes")
             else:
-                titulo_label = self.strat_c_sell.master.winfo_children()[0]
-                titulo_label.configure(text="PEPITA VENTA")
+                self.card_ccl.pill.configure(fg_color="#15803d")
+                self.card_ccl.lbl_pct.configure(text=f"{ccl_pct}")
+
+            self.update_price_card(self.card_p2p_ask, market_bid_p2p5, None) 
+            self.update_price_card(self.card_p2p_bid, market_ask_p2p5, None)
             
-            # Actualizar el valor
+            self.lbl_ppp_radar.configure(text=f"$ {ppp:,.2f}")
+            self.lbl_total_ars.configure(text=f"$ {saldo_ars:,.0f}")
+            self.lbl_total_usdt.configure(text=f"{stock_usdt:,.2f}")
+            
+            # CUADRO VIVO
+            frame_vivo, lbl_dia_vivo, lbl_gap_vivo = self.market_widgets[-1]
+            
+            frame_vivo.configure(fg_color="#1a1a1a", border_color="#3498db", border_width=2)
+            
+            color_vivo = "white"
+            if canje_vivo > 5.00: color_vivo = "#e74c3c"
+            elif canje_vivo < 2.00: color_vivo = "#2ecc71"
+            
+            lbl_dia_vivo.configure(text="CANJE", text_color="#3498db")
+            lbl_gap_vivo.configure(text=f"{canje_vivo:.2f}%", text_color=color_vivo)
+            
+            # DECISIÓN
+            if saldo_ars > 50000:
+                mejor_entrada = min(market_bid_1, market_ask_1)
+                modo_entrada = "(TAKER)" if market_ask_1 < market_bid_1 else "(MAKER)"
+                if ppp == 0: txt_act, col_act, det_act = f"INICIAR {modo_entrada}", "#27ae60", "Inicia Posición."
+                elif mejor_entrada < ppp: txt_act, col_act, det_act = "🟢 ACUMULAR", "#27ae60", f"Bajas PPP ({modo_entrada})."
+                elif mejor_entrada < ppp * 1.01: txt_act, col_act, det_act = "🔵 SUMAR VOLUMEN", "#2980b9", "Mantienes PPP."
+                else: txt_act, col_act, det_act = "ESPERAR", "gray", f"Mercado caro (${mejor_entrada:.0f})."
+            else: txt_act, col_act, det_act = "SIN LIQUIDEZ", "#333", "Carga ARS."
+            self.lbl_buy_action.configure(text=txt_act, text_color=col_act)
+            self.lbl_buy_detail.configure(text=det_act)
+
+            # CLIMA
+            desvio = gap_vivo - 3.0
+            clima_txt = "Estable"; color_clima = "#3498db"
+            if gap_vivo > 0:
+                if desvio > 0.5: clima_txt = "Eufórico (Vender)"; color_clima = "#e74c3c"
+                elif desvio < -0.5: clima_txt = "Deprimido (Comprar)"; color_clima = "#2ecc71"
+            if stock_usdt > 10:
+                roi = (((market_ask_1 * (1 - maker_fee)) / ppp) - 1) * 100 if ppp > 0 else 0.0
+                if roi > 0.5: txt_sell, col_sell, det_sell = f"🟢 VENDER (+{roi:.1f}%)", "#2ecc71", f"Mercado {clima_txt}."
+                elif roi > -0.5: txt_sell, col_sell, det_sell = f"🔵 ROTAR ({roi:.1f}%)", "#2980b9", "Sales hecho."
+                else: txt_sell, col_sell, det_sell = f"🛑 HOLDEAR ({roi:.1f}%)", "#c0392b", f"Clima: {clima_txt}"
+            else: txt_sell, col_sell, det_sell = f"CLIMA: {clima_txt}", color_clima, f"Canje CCL: {gap_ccl:+.2f}%"
+            self.lbl_sell_action.configure(text=txt_sell, text_color=col_sell)
+            self.lbl_sell_detail.configure(text=det_sell)
+
+            # ESTRATEGIAS
+            val_ask_1 = float(market_ask_1) if market_ask_1 else 0.0
+            val_ask_15 = float(market_ask_p2p5) if market_ask_p2p5 else 0.0
+            val_bid_1 = float(market_bid_1) if market_bid_1 else 0.0
+            val_bid_15 = float(market_bid_p2p5) if market_bid_p2p5 else 0.0
+
+            if val_bid_15 > 0 and val_ask_15 > 0:
+                profit_a = ((val_ask_15 * (1 - maker_fee)) / (val_bid_15 * (1 + maker_fee)) - 1) * 100
+                skew_p2 = 0.0
+                if val_ask_1 > 0 and val_ask_15 > 0: skew_p2 = ((val_ask_15 / val_ask_1) - 1) * 100
+                
+                texto_final = f"Spr: {profit_a:+.2f}% | Sk: {skew_p2:.2f}%"
+                col_a = "#e74c3c"
+                if profit_a > 1.5 and skew_p2 < 2.0: col_a = "#2ecc71"
+                elif profit_a > 0: col_a = "#f39c12"
+                self.strat_a.configure(text=texto_final, text_color=col_a)
+            else:
+                self.strat_a.configure(text="S/D", text_color="gray")
+
+            if val_bid_1 > 0 and val_bid_15 > 0:
+                dist_buy = (1 - (val_bid_15 / val_bid_1)) * 100
+                text_b = f"Brecha: {dist_buy:.2f}%"
+                col_b = "#3498db"
+                if dist_buy > 0.8: col_b = "#2ecc71"
+                elif dist_buy < 0.1: col_b = "#e74c3c"
+                self.strat_b.configure(text=text_b, text_color=col_b)
+            else:
+                self.strat_b.configure(text="S/D", text_color="gray")
+
+            UMBRAL_MIN = 0.3
+            if profit_c_buy >= UMBRAL_MIN:
+                tipo_buy = "💎 VIABLE"; color_buy = "#2ecc71"
+            else:
+                tipo_buy = "SIN SETUP"; color_buy = "gray"; profit_c_buy = max(profit_c_buy, -5.0)
+
+            self.update_strat_card(self.strat_c_buy, profit_c_buy, "Mín: 0.3%")
+
+            if profit_c_sell == -999.0: tipo_sell = "SIN PPP"; color_sell = "gray"; profit_c_sell = 0.0
+            elif profit_c_sell >= 1.0: tipo_sell = "💎 VIABLE"; color_sell = "#2ecc71"
+            elif profit_c_sell >= 0.3: tipo_sell = "⚠️ MARGINAL"; color_sell = "#f39c12"
+            elif profit_c_sell >= 0.0: tipo_sell = "🔵 NEUTRO"; color_sell = "#3498db"
+            else: tipo_sell = "🛑 HOLDEAR"; color_sell = "#e74c3c"; profit_c_sell = max(profit_c_sell, -5.0)
+
             self.update_strat_card(self.strat_c_sell, profit_c_sell, "Mín: 0.3%")
-        except Exception as e:
-            print(f"⚠️ Error actualizando PEPITA VENTA: {e}")
-        
-        # 6. ACTUALIZACIONES FINALES
-        self.lbl_equity.configure(text=f"US$ {(saldo_ars / market_ask_1 + stock_usdt):,.2f}" if market_ask_1 else "---")
-        self.update_stats_footer()
+            
+            self.lbl_equity.configure(text=f"US$ {(saldo_ars / market_ask_1 + stock_usdt):,.2f}" if market_ask_1 else "---")
+            self.update_stats_footer()
 
     def update_stats_footer(self):
         try:
@@ -612,12 +600,12 @@ class DashboardView(ctk.CTkFrame):
         except: pass
 
     def mk_dolarito_card(self, col, title):
-        card = ctk.CTkFrame(self.cards_frame, fg_color="#252525", corner_radius=8, border_width=1, border_color="#333")
-        card.grid(row=0, column=col, padx=4, sticky="ew")
-        ctk.CTkLabel(card, text=title, font=("Arial", 12, "bold"), text_color="#aaa").pack(pady=(10,0))
-        lbl_val = ctk.CTkLabel(card, text="---", font=("Arial", 30, "bold"), text_color="white"); lbl_val.pack(pady=(5,0))
-        pill = ctk.CTkFrame(card, corner_radius=12, height=24, fg_color="#252525"); pill.pack(pady=(5,12))
-        lbl_pct = ctk.CTkLabel(pill, text="---", font=("Arial", 11, "bold"), text_color="white"); lbl_pct.pack(padx=10, pady=2)
+        card = ctk.CTkFrame(self.cards_frame, fg_color="#252525", corner_radius=6, border_width=1, border_color="#333")
+        card.grid(row=0, column=col, padx=3, sticky="ew")
+        ctk.CTkLabel(card, text=title, font=("Arial", 10, "bold"), text_color="#aaa").pack(pady=(6,0))
+        lbl_val = ctk.CTkLabel(card, text="---", font=("Arial", 24, "bold"), text_color="white"); lbl_val.pack(pady=(2,0))
+        pill = ctk.CTkFrame(card, corner_radius=10, height=20, fg_color="#252525"); pill.pack(pady=(2,6))
+        lbl_pct = ctk.CTkLabel(pill, text="---", font=("Arial", 10, "bold"), text_color="white"); lbl_pct.pack(padx=8, pady=2)
         card.lbl_val = lbl_val; card.lbl_pct = lbl_pct; card.pill = pill
         return card
 
@@ -630,73 +618,55 @@ class DashboardView(ctk.CTkFrame):
         else:
             card_widget.pill.configure(fg_color="transparent"); card_widget.lbl_pct.configure(text="")
 
-    def mk_stat_card(self, parent, col, title, val, color):
-        f = ctk.CTkFrame(parent, fg_color="transparent"); f.grid(row=0, column=col, padx=5, pady=5)
-        ctk.CTkLabel(f, text=title, font=("Arial", 10, "bold"), text_color="gray").pack()
-        lbl = ctk.CTkLabel(f, text=val, font=("Arial", 18, "bold"), text_color=color); lbl.pack(); return lbl
-    def mk_strategy_card(self, col, title, subt, color):
-        card = ctk.CTkFrame(self.matrix_frame, fg_color="#1a1a1a", corner_radius=8, border_width=1, border_color="#333"); card.grid(row=0, column=col, padx=4, sticky="ew")
-        ctk.CTkLabel(card, text=title, font=("Arial", 11, "bold"), text_color=color).pack(pady=(8,0))
-        lbl_pct = ctk.CTkLabel(card, text="--- %", font=("Arial", 18, "bold"), text_color="white"); lbl_pct.pack(pady=(2,0))
-        ctk.CTkLabel(card, text=subt, font=("Arial", 10), text_color="gray").pack(pady=(0,8)); return lbl_pct
+    def mk_strategy_card_compact(self, parent, col, title):
+        card = ctk.CTkFrame(parent, fg_color="#1a1a1a", corner_radius=6, border_width=1, border_color="#333")
+        card.grid(row=0, column=col, padx=3, sticky="nsew")
+        
+        # Título: Aumentado a 11
+        ctk.CTkLabel(card, text=title, font=("Arial", 11, "bold"), text_color="gray").pack(pady=(8,2))
+        
+        # Valor: Aumentado a 20 (Más impacto)
+        lbl_pct = ctk.CTkLabel(card, text="--- %", font=("Arial", 20, "bold"), text_color="white")
+        lbl_pct.pack(pady=(0,8))
+        return lbl_pct
+    
     def update_strat_card(self, lbl, val, txt_extra):
         color = "#e74c3c" if val < 0 else "#2ecc71" if val > 0.5 else "#f1c40f"
         lbl.configure(text=f"{val:+.2f}%", text_color=color)
+    
     def update_radar_labels(self, val): self.update_stats_footer()
+    
     def confirmar_reset_ppp(self): 
         def do_reset(): self.controller.reiniciar_ppp(); self.lbl_ppp_radar.configure(text=f"PPP: $ 0.00")
         self.controller.ask_confirm("Reiniciar PPP", "¿Archivar compras y volver a 0?", do_reset)
+    
     def update_view(self): self.update_stats_footer()
 
-# --- AGREGA ESTO AL FINAL DE TU CLASE DashboardView ---
     def actualizar_tablero_estrategico(self):
-        """Actualiza los cuadros de Situación y Clima con MEMORIA"""
-        
-        historia = getattr(self, "historical_gaps", [])
+        historia = getattr(self, "datos_historicos_cache", [])
+        if not historia: historia = getattr(self, "historical_gaps", [])
         vivo = getattr(self.scraper_engine, "cache_vivo", None)
 
-        estrategia = self.scraper_engine.analizar_mercado(historia, vivo)
+        try: estrategia = self.scraper_engine.analizar_mercado(historia, vivo)
+        except: return
 
-        # --- LA CORRECCIÓN ANTI-PARPADEO ---
-        # Si el cerebro responde "CARGANDO..." o "ESPERAR", pero la pantalla 
-        # YA TIENE un dato válido (no es "---"), ignoramos esta actualización.
-        # Preferimos ver el dato de hace 5 segundos que un letrero de "Cargando".
-        
-        texto_actual = self.lbl_sell_action.cget("text")
-        nueva_accion = estrategia.get('accion', '---')
-        
-        if "CARGANDO" in nueva_accion and texto_actual != "---":
-            return # Nos quedamos con lo que había, salimos de la función.
-        # -----------------------------------
+        if "CARGANDO" in estrategia.get('accion', '') and self.lbl_sell_action.cget("text") != "---": return 
 
-        # SI PASAMOS EL FILTRO, ACTUALIZAMOS TODO NORMAL:
-        
-        # 1. CUADRO DERECHO
-        self.lbl_sell_action.configure(text=nueva_accion)
+        self.lbl_sell_action.configure(text=estrategia.get('accion', '---'))
         self.lbl_sell_detail.configure(text=estrategia.get('subtexto', '...'))
         
-        colores = {"compra": "#2ecc71", "venta": "#e74c3c", "neutral": "#3498db", "error": "#gray"}
-        self.lbl_sell_action.configure(text_color=colores.get(estrategia.get('tipo'), "#white"))
+        cols = {"compra": "#2ecc71", "venta": "#e74c3c", "neutral": "#3498db"}
+        self.lbl_sell_action.configure(text_color=cols.get(estrategia.get('tipo'), "white"))
 
-        # 2. CUADRO IZQUIERDO
         rec = estrategia.get('rec_contable', '---')
         self.lbl_buy_action.configure(text=rec)
-        
-        if "SUMAR" in rec:
-            self.lbl_buy_action.configure(text_color="#2ecc71")
-            self.lbl_buy_detail.configure(text="El mercado favorece compra.")
-        elif "VENDER" in rec:
-            self.lbl_buy_action.configure(text_color="#e74c3c")
-            self.lbl_buy_detail.configure(text="Aprovecha subida para salir.")
-        else:
-            self.lbl_buy_action.configure(text_color="#3498db")
-            self.lbl_buy_detail.configure(text="Operación normal.")
-
+        if "SUMAR" in rec: self.lbl_buy_action.configure(text_color="#2ecc71")
+        elif "VENDER" in rec: self.lbl_buy_action.configure(text_color="#e74c3c")
+        else: self.lbl_buy_action.configure(text_color="#3498db")
+                
     def abrir_blacklist_manager(self):
-        """Abre ventana de gestión de usuarios baneados"""
         modal = ModernModal(self.controller, "🛡️ GESTOR DE BLACKLIST", width=600, height=500)
         
-        # Frame superior: Añadir usuario
         add_frame = ctk.CTkFrame(modal.content_frame, fg_color="#1a1a1a", corner_radius=8)
         add_frame.pack(fill="x", padx=10, pady=10)
         
@@ -743,18 +713,15 @@ class DashboardView(ctk.CTkFrame):
             command=agregar_a_blacklist
         ).pack(side="left")
         
-        # Frame inferior: Lista de baneados
         ctk.CTkLabel(modal.content_frame, text="USUARIOS BANEADOS:", font=("Arial", 11, "bold"), text_color="gray").pack(anchor="w", padx=10, pady=(20,5))
         
         list_frame = ctk.CTkScrollableFrame(modal.content_frame, fg_color="#0a0a0a", height=250)
         list_frame.pack(fill="both", expand=True, padx=10, pady=(0,10))
         
         def actualizar_lista():
-            # Limpiar lista actual
             for widget in list_frame.winfo_children():
                 widget.destroy()
             
-            # Cargar desde BD
             self.controller.cursor.execute("SELECT id, nickname, fecha_baneo, motivo FROM p2p_blacklist ORDER BY fecha_baneo DESC")
             baneados = self.controller.cursor.fetchall()
             
@@ -766,14 +733,12 @@ class DashboardView(ctk.CTkFrame):
                 row = ctk.CTkFrame(list_frame, fg_color="#1a1a1a", corner_radius=6)
                 row.pack(fill="x", pady=3, padx=5)
                 
-                # Info
                 info_box = ctk.CTkFrame(row, fg_color="transparent")
                 info_box.pack(side="left", fill="x", expand=True, padx=10, pady=8)
                 
                 ctk.CTkLabel(info_box, text=nick, font=("Arial", 13, "bold"), text_color="#e74c3c").pack(anchor="w")
                 ctk.CTkLabel(info_box, text=f"Fecha: {fecha} | {motivo}", font=("Arial", 9), text_color="gray").pack(anchor="w")
                 
-                # Botón eliminar
                 def eliminar_ban(ban_id=ban_id, nick=nick):
                     try:
                         self.controller.cursor.execute("DELETE FROM p2p_blacklist WHERE id=?", (ban_id,))
