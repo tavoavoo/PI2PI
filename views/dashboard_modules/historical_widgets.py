@@ -167,6 +167,19 @@ class HistoricalTimelineWidget(ctk.CTkFrame):
             
             self.lbl_trend.configure(text=txt_t, text_color=trend.get('color', 'white'))
             
+            # 4. MEJOR HORA (🔥 ESTE ERA EL FIX FALTANTE)
+            best_time = metrics.get('best_trading_time', {})
+            hora = best_time.get('mejor_hora', 0)
+            gap_hora = float(best_time.get('mejor_gap', 0) or 0)
+            
+            # Formatear hora con padding (ej: "09:00" en vez de "9:00")
+            hora_texto = f"{hora:02d}:00"
+            
+            self.lbl_best_time.configure(
+                text=f"{hora_texto}\n({gap_hora:+.2f}%)", 
+                text_color="#e3a319"  # Color dorado para destacar
+            )
+            
         except Exception as e:
             print(f"Error widget: {e}")
             self.lbl_status.configure(text="Err", text_color="red")
