@@ -92,15 +92,22 @@ class HistoricalTimelineWidget(ctk.CTkFrame):
 
     def update_data(self):
         try:
-            if not self.analyzer: return
-            try: metrics = self.analyzer.get_dashboard_metrics()
-            except: return
+            if not self.analyzer: 
+                return
+            
+            try: 
+                metrics = self.analyzer.get_dashboard_metrics()
+            except Exception as e:
+                print(f"⚠️ Error obteniendo métricas: {e}")
+                return
+                
             if not metrics or metrics.get('status') != 'success': 
                 self.lbl_status.configure(text="Sin datos")
                 return
             
             summary = metrics.get('summary_7days', [])
-            if not summary: return
+            if not summary: 
+                return
             
             summary_reversed = list(reversed(summary))
             last_5_days = summary_reversed[-5:] if len(summary_reversed) >= 5 else summary_reversed
@@ -117,16 +124,22 @@ class HistoricalTimelineWidget(ctk.CTkFrame):
                     try:
                         dt = datetime.strptime(fecha_str, "%Y-%m-%d")
                         card['lbl_date'].configure(text=dt.strftime("%d/%m"))
-                    except: card['lbl_date'].configure(text="--/--")
+                    except: 
+                        card['lbl_date'].configure(text="--/--")
+                    
                     card['lbl_day'].configure(text=str(day_data.get('dia_nombre', '---')))
                     
                     # GAP y Color Estricto
                     gap = float(day_data.get('gap_promedio', 0) or 0)
                     card['lbl_gap'].configure(text=f"{gap:+.2f}%")
                     
-                    if gap > 2.0: color = "#e74c3c"   # Rojo
-                    elif gap < 0.0: color = "#2ecc71" # Verde
-                    else: color = "#3498db"           # Azul
+                    if gap > 2.0: 
+                        color = "#e74c3c"   # Rojo
+                    elif gap < 0.0: 
+                        color = "#2ecc71"   # Verde
+                    else: 
+                        color = "#3498db"   # Azul
+                    
                     card['lbl_gap'].configure(text_color=color)
                     
                     # Volatilidad (Abajo Izquierda)
@@ -147,41 +160,72 @@ class HistoricalTimelineWidget(ctk.CTkFrame):
                     card['lbl_range'].configure(text="")
                     card['lbl_close'].configure(text="")
 
-            # --- ACTUALIZAR MÉTRICAS INFERIORES ---
+            # ========================================
+            # ✅ MÉTRICAS INFERIORES (COMPLETAS)
+            # ========================================
+            
+            # 1. PROMEDIO 7 DÍAS
             vol_data = metrics.get('volatility', {})
-            prom = float(vol_data.get('promedio', 0) or 0)
-            self.lbl_avg_7d.configure(text=f"{prom:+.2f}%", text_color="#3498db")
-            
-            dev = float(vol_data.get('desviacion_estandar', 0) or 0)
-            self.lbl_volatility.configure(text=f"±{dev:.2f}%", text_color="white")
-            
-            trend = metrics.get('trend_24h', {})
-            t_dir = trend.get('direccion', 'estable')
-            
-            if t_dir == 'subiendo':
-                txt_t = "↗ Subiendo"
-            elif t_dir == 'bajando':
-                txt_t = "↘ Bajando"
+            if vol_data:
+                prom = float(vol_data.get('promedio', 0) or 0)
+                self.lbl_avg_7d.configure(text=f"{prom:+.2f}%", text_color="#3498db")
             else:
-                txt_t = "→ Estable"
+                self.lbl_avg_7d.configure(text="---", text_color="gray")
             
-            self.lbl_trend.configure(text=txt_t, text_color=trend.get('color', 'white'))
+            # 2. VOLATILIDAD
+            if vol_data:
+                dev = float(vol_data.get('desviacion_estandar', 0) or 0)
+                self.lbl_volatility.configure(text=f"±{dev:.2f}%", text_color="white")
+            else:
+                self.lbl_volatility.configure(text="---", text_color="gray")
             
-            # 4. MEJOR HORA (🔥 ESTE ERA EL FIX FALTANTE)
-            best_time = metrics.get('best_trading_time', {})
-            hora = best_time.get('mejor_hora', 0)
-            gap_hora = float(best_time.get('mejor_gap', 0) or 0)
+            # 3. TENDENCIA
+            trend = metrics.get('trend_24h', {})
+            if trend:
+                t_dir = trend.get('direccion', 'estable')
+                
+                if t_dir == 'subiendo':
+                    txt_t = "↗ Subiendo"
+                elif t_dir == 'bajando':
+                    txt_t = "↘ Bajando"
+                else:
+                    txt_t = "→ Estable"
+                
+                self.lbl_trend.configure(text=txt_t, text_color=trend.get('color', 'white'))
+            else:
+                self.lbl_trend.configure(text="---", text_color="gray")
             
-            # Formatear hora con padding (ej: "09:00" en vez de "9:00")
-            hora_texto = f"{hora:02d}:00"
+            # ========================================
+            # 4. MEJOR HORA ← ESTO ES LO QUE FALTABA
+            # ========================================
+            best_time_data = metrics.get('best_trading_time')
             
-            self.lbl_best_time.configure(
-                text=f"{hora_texto}\n({gap_hora:+.2f}%)", 
-                text_color="#e3a319"  # Color dorado para destacar
-            )
+            if best_time_data and best_time_data is not None:
+                try:
+                    mejor_h = int(best_time_data.get('mejor_hora', 0))
+                    mejor_gap = float(best_time_data.get('mejor_gap', 0))
+                    
+                    # Formato: "14hs (+3.2%)"
+                    texto_hora = f"{mejor_h:02d}hs (+{mejor_gap:.1f}%)"
+                    self.lbl_best_time.configure(text=texto_hora, text_color="#2ecc71")
+                    
+                except Exception as e:
+                    print(f"⚠️ Error formateando mejor hora: {e}")
+                    self.lbl_best_time.configure(text="S/D", text_color="gray")
+            else:
+                # Si no hay suficientes datos históricos
+                self.lbl_best_time.configure(text="S/D", text_color="gray")
+            
+            # ========================================
+            # STATUS FINAL
+            # ========================================
+            total = metrics.get('total_registros', 0)
+            self.lbl_status.configure(text=f"✓ {total} reg", text_color="#2ecc71")
             
         except Exception as e:
-            print(f"Error widget: {e}")
+            print(f"❌ Error en update_data del widget: {e}")
+            import traceback
+            traceback.print_exc()
             self.lbl_status.configure(text="Err", text_color="red")
 
 class CompactHistoricalCard(ctk.CTkFrame):

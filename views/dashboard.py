@@ -319,12 +319,11 @@ class DashboardView(ctk.CTkFrame):
             if datos_precios:
                 self.cached_blue, self.cached_blue_pct = datos_precios["blue"]
                 self.cached_mep, self.cached_mep_pct = datos_precios["mep"]
+                # ✅ CCL TRATADO IGUAL QUE LOS DEMÁS
+                self.cached_ccl, self.cached_ccl_pct = datos_precios["ccl"]
             
-            ccl_info = self.ccl_manager.obtener_ccl_inteligente(self.scraper_engine)
-            
-            self.cached_ccl = ccl_info['precio']
-            self.cached_ccl_pct = ccl_info.get('pct', "0.00%")
-            self.ccl_status = ccl_info['tipo']
+            # ✅ SIEMPRE VIVO (Sin validación de horario)
+            self.ccl_status = "VIVO"
             
             time.sleep(60)
 
@@ -456,18 +455,7 @@ class DashboardView(ctk.CTkFrame):
             # PRECIOS
             self.update_price_card(self.card_blue, blue, blue_pct)
             self.update_price_card(self.card_mep, mep, mep_pct)
-            
-            txt_ccl_extra = ""
-            if ccl_tipo == "CONGELADO":
-                txt_ccl_extra = " 🔒" 
-            
-            self.card_ccl.lbl_val.configure(text=f"${ccl:,.2f}{txt_ccl_extra}")
-            if ccl_tipo == "CONGELADO":
-                self.card_ccl.pill.configure(fg_color="#e67e22")
-                self.card_ccl.lbl_pct.configure(text="Ref. Viernes")
-            else:
-                self.card_ccl.pill.configure(fg_color="#15803d")
-                self.card_ccl.lbl_pct.configure(text=f"{ccl_pct}")
+            self.update_price_card(self.card_ccl, ccl, ccl_pct)
 
             self.update_price_card(self.card_p2p_ask, market_bid_p2p5, None) 
             self.update_price_card(self.card_p2p_bid, market_ask_p2p5, None)
