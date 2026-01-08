@@ -214,12 +214,12 @@ class HistorialView(ctk.CTkFrame):
             widgets["btn_edit"].configure(command=self.make_cmd(self.modal_editar, oid))
             widgets["btn_del"].configure(command=self.make_cmd(self.borrar, oid))
 
-    # --- NUEVA LÓGICA: ASIGNAR BANCO DESDE EL DESPLEGABLE ---
+    # --- LÓGICA: ASIGNAR BANCO DESDE EL DESPLEGABLE ---
     def asignar_banco(self, oid, banco_seleccionado):
         if banco_seleccionado == "Sin Cuentas" or not banco_seleccionado: return
         
         try:
-            # 1. Obtener datos de la operación para saber cuánto sumar/restar
+            # 1. Obtener datos de la operación
             self.c.cursor.execute("SELECT tipo, monto_ars FROM operaciones WHERE id=?", (oid,))
             res = self.c.cursor.fetchone()
             if not res: return
@@ -230,7 +230,6 @@ class HistorialView(ctk.CTkFrame):
             self.c.cursor.execute("UPDATE operaciones SET banco=? WHERE id=?", (banco_seleccionado, oid))
             
             # 3. Actualizar el SALDO de la cuenta (Ahora que sabemos cuál es)
-            # NOTA: No tocamos el stock de USDT, ese ya se actualizó al sincronizar.
             if tipo_op == "Compra":
                 # Si COMPRÉ USDT, gasté Pesos -> Restar al banco
                 self.c.cursor.execute("UPDATE cuentas SET saldo = saldo - ? WHERE nombre=?", (monto_fiat, banco_seleccionado))
@@ -240,16 +239,15 @@ class HistorialView(ctk.CTkFrame):
             
             self.c.conn.commit()
             
-            # 4. Refrescar visualmente (El dropdown desaparecerá y quedará el texto fijo)
-            self.c.refresh_all_views() # Actualiza dashboard y cuentas
-            self.renderizar_pagina() # Actualiza esta tabla
-            
+            # 4. Refrescar visualmente
+            self.c.refresh_all_views() 
+            self.renderizar_pagina() 
             self.c.show_info("Clasificado", f"Operación asignada a {banco_seleccionado}.\nSaldo actualizado.")
             
         except Exception as e:
             self.c.show_error("Error", str(e))
 
-    # --- NUEVA LÓGICA: SYNC AUTOMÁTICO (SIN MODAL) ---
+    # --- LÓGICA: SYNC AUTOMÁTICO (SIN MODAL) ---
     def sync_binance_api(self):
         self.c.cursor.execute("SELECT value FROM config WHERE key='api_key'")
         ak_res = self.c.cursor.fetchone()
@@ -257,7 +255,7 @@ class HistorialView(ctk.CTkFrame):
         ask_res = self.c.cursor.fetchone()
         
         if not ak_res or not ask_res: 
-            self.pedir_credenciales() # Mantiene modal solo para config inicial
+            self.pedir_credenciales() 
         else: 
             self.ejecutar_sync_silencioso(ak_res[0], ask_res[0])
 
@@ -265,7 +263,6 @@ class HistorialView(ctk.CTkFrame):
         self.lbl_status.configure(text="⏳ Conectando con Binance...", text_color="#f39c12")
         self.update()
         try:
-            # Esta función del controller debe devolver SOLO las órdenes que NO están en DB
             orders = self.c.fetch_binance_history(api_key, api_secret)
             
             if not orders:
@@ -274,8 +271,19 @@ class HistorialView(ctk.CTkFrame):
 
             count = 0
             for orden in orders:
-                # GUARDADO AUTOMÁTICO
-                # Banco = "Por Clasificar"
+                # --- NOVEDAD: FILTRO ANTI-RESURRECCIÓN (BLACKLIST) ---
+                # 1. Verificar si esta orden fue eliminada previamente
+                self.c.cursor.execute("SELECT 1 FROM ignored_orders WHERE order_id=?", (str(orden['order_id']),))
+                if self.c.cursor.fetchone():
+                    # Está en la lista negra, la ignoramos.
+                    continue
+                
+                # 2. Verificar si ya existe en operaciones (Doble check por seguridad)
+                self.c.cursor.execute("SELECT 1 FROM operaciones WHERE order_id=?", (str(orden['order_id']),))
+                if self.c.cursor.fetchone():
+                    continue
+
+                # Si pasa los filtros, GUARDAMOS
                 banco_inicial = "Por Clasificar"
                 
                 self.c.cursor.execute(
@@ -288,15 +296,10 @@ class HistorialView(ctk.CTkFrame):
                 )
                 
                 # ACTUALIZACIÓN PARCIAL DE SALDOS (SOLO USDT)
-                # Al sincronizar, el trade YA OCURRIÓ, por lo tanto el Stock USDT cambió.
-                # El saldo FIAT (Pesos) NO se toca hasta que elijas el banco en el dropdown.
-                
                 if orden['tipo'] == "Compra":
-                    # Entran USDT
                     self.c.cursor.execute("UPDATE config SET value = CAST(value AS REAL) + ? WHERE key='stock_usdt'", (orden['stock_impact'],))
                     self.c.STOCK_USDT += orden['stock_impact']
                 else:
-                    # Salen USDT
                     self.c.cursor.execute("UPDATE config SET value = CAST(value AS REAL) - ? WHERE key='stock_usdt'", (orden['stock_impact'],))
                     self.c.STOCK_USDT -= orden['stock_impact']
                 
@@ -305,13 +308,17 @@ class HistorialView(ctk.CTkFrame):
             self.c.conn.commit()
             self.c.refresh_all_views()
             self.renderizar_pagina()
-            self.lbl_status.configure(text=f"✅ {count} Nuevas (Pendientes de clasificar).", text_color="#3498db")
+            
+            if count > 0:
+                self.lbl_status.configure(text=f"✅ {count} Nuevas (Pendientes de clasificar).", text_color="#3498db")
+            else:
+                self.lbl_status.configure(text="✅ Sincronizado (Nada nuevo).", text_color="#2cc985")
             
         except Exception as e:
             self.lbl_status.configure(text=f"❌ Error Sync: {str(e)}", text_color="red")
-            print(e)
+            print(f"Error detallado en sync: {e}")
 
-    # --- RESTO DE FUNCIONES (BUSCADOR, DELETE, EXPORT) IGUALES ---
+    # --- RESTO DE FUNCIONES ---
     def ejecutar_busqueda(self):
         self.search_term = self.entry_search.get()
         self.pagina = 1 
@@ -334,7 +341,7 @@ class HistorialView(ctk.CTkFrame):
             if row["var"].get() == 1 and row["current_oid"] is not None:
                 ids_to_delete.append(row["current_oid"])
         if not ids_to_delete: return self.c.show_info("Info", "No seleccionaste nada.")
-        self.c.ask_confirm("Borrado Masivo", f"¿Eliminar {len(ids_to_delete)} operaciones?", 
+        self.c.ask_confirm("Borrado Masivo", f"¿Eliminar {len(ids_to_delete)} operaciones?\nSe reembolsarán los saldos.", 
                            lambda: self.do_delete_batch(ids_to_delete))
 
     def do_delete_batch(self, ids):
@@ -346,7 +353,7 @@ class HistorialView(ctk.CTkFrame):
             self.c.conn.commit()
             self.c.refresh_all_views()
             self.renderizar_pagina()
-            self.c.show_info("Listo", f"Se eliminaron {count} operaciones.")
+            self.c.show_info("Listo", f"Se eliminaron {count} operaciones y se ajustó la tesorería.")
         except Exception as e: self.c.show_error("Error", str(e))
 
     def make_cmd(self, func, arg): return lambda: func(arg)
@@ -364,21 +371,23 @@ class HistorialView(ctk.CTkFrame):
     def update_view(self): self.renderizar_pagina()
 
     def borrar(self, oid): 
-        self.c.ask_confirm("Borrar", f"¿Eliminar operación ID {oid}? Se revertirá el saldo.", lambda: self.do_delete(oid))
+        self.c.ask_confirm("Borrar Definitivamente", f"¿Eliminar operación ID {oid}?\nSe revertirán los fondos y NO volverá a sincronizarse.", lambda: self.do_delete(oid))
 
     def do_delete(self, oid, refresh=True):
         try:
-            self.c.cursor.execute("SELECT tipo, banco, monto_ars, monto_usdt FROM operaciones WHERE id=?", (oid,))
+            # 1. Recuperar datos antes de borrar
+            self.c.cursor.execute("SELECT tipo, banco, monto_ars, monto_usdt, order_id FROM operaciones WHERE id=?", (oid,))
             op = self.c.cursor.fetchone()
             
             if op:
-                tipo, banco, fiat, usdt = op
+                tipo, banco, fiat, usdt, order_id_binance = op
                 
-                # Si el banco es "Por Clasificar", SOLO revertimos USDT stock, no fiat
+                # 2. REEMBOLSO / REVERSIÓN DE FONDOS
                 es_pendiente = (banco == "Por Clasificar")
 
                 if tipo == "Compra":
-                    # Reversión de Compra (Devolver ARS, Quitar USDT)
+                    # Si era Compra: Habíamos gastado ARS y sumado USDT.
+                    # Revertir: Devolver ARS (si estaba clasificado) y Restar USDT.
                     if not es_pendiente:
                         self.c.cursor.execute("UPDATE cuentas SET saldo = saldo + ? WHERE nombre=?", (fiat, banco))
                     
@@ -386,18 +395,25 @@ class HistorialView(ctk.CTkFrame):
                     self.c.STOCK_USDT -= usdt
                     
                 else: # Venta
-                    # Reversión de Venta (Quitar ARS, Devolver USDT)
+                    # Si era Venta: Habíamos recibido ARS y restado USDT.
+                    # Revertir: Restar ARS (si estaba clasificado) y Devolver USDT.
                     if not es_pendiente:
                         self.c.cursor.execute("UPDATE cuentas SET saldo = saldo - ? WHERE nombre=?", (fiat, banco))
 
                     self.c.cursor.execute("UPDATE config SET value = CAST(value AS REAL) + ? WHERE key='stock_usdt'", (usdt,))
                     self.c.STOCK_USDT += usdt
 
-                # Borrar
+                # 3. LISTA NEGRA (Anti-Resurrección)
+                # Guardamos el order_id de Binance en la tabla de ignorados
+                if order_id_binance:
+                    self.c.cursor.execute("INSERT OR IGNORE INTO ignored_orders (order_id) VALUES (?)", (order_id_binance,))
+
+                # 4. BORRADO DEFINITIVO
                 self.c.cursor.execute("DELETE FROM operaciones WHERE id=?", (oid,))
-                self.c.conn.commit()
                 
+                # Si es un batch, el commit lo hace la función padre. Si es individual, lo hacemos aquí.
                 if refresh:
+                    self.c.conn.commit()
                     self.c.refresh_all_views()
                     self.renderizar_pagina()
                 return True

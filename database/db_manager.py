@@ -27,6 +27,7 @@ class DBManager:
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS operaciones (id INTEGER PRIMARY KEY, fecha TEXT, nickname TEXT, tipo TEXT, banco TEXT, monto_ars REAL, monto_usdt REAL, cotizacion REAL, fee REAL DEFAULT 0, moneda TEXT DEFAULT 'ARS', archivado INTEGER DEFAULT 0, order_id TEXT, rol TEXT DEFAULT '---')''')
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS cierres (id INTEGER PRIMARY KEY, fecha_cierre TEXT)''')
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value REAL)''')
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS ignored_orders (order_id TEXT PRIMARY KEY)''')
         
         # --- MIGRACIONES (Para actualizar tu DB existente sin borrar datos) ---
         try: self.cursor.execute("ALTER TABLE cuentas ADD COLUMN moneda TEXT DEFAULT 'ARS'")
