@@ -43,10 +43,29 @@ class DBManager:
         except: pass
 
         self.cursor.execute("UPDATE cuentas SET limite_mensual = 45000000 WHERE moneda = 'ARS'")
+        
+        # --- CONFIGURACIÓN DE VALORES POR DEFECTO (AQUÍ ESTÁ EL CAMBIO) ---
+        
+        # Stock inicial en 0 si no existe
         self.cursor.execute("SELECT value FROM config WHERE key='stock_usdt'")
-        if not self.cursor.fetchone(): self.cursor.execute("INSERT INTO config (key, value) VALUES (?, ?)", ('stock_usdt', 0.0))
+        if not self.cursor.fetchone(): 
+            self.cursor.execute("INSERT INTO config (key, value) VALUES (?, ?)", ('stock_usdt', 0.0))
+        
+        # 1. MAKER FEE (Bronce 0.16% = 0.0016)
+        # Seteamos las dos llaves para evitar conflictos futuros
         self.cursor.execute("SELECT value FROM config WHERE key='comision_maker'")
-        if not self.cursor.fetchone(): self.cursor.execute("INSERT INTO config (key, value) VALUES (?, ?)", ('comision_maker', 0.002))
+        if not self.cursor.fetchone(): 
+            self.cursor.execute("INSERT INTO config (key, value) VALUES (?, ?)", ('comision_maker', 0.0016))
+
+        self.cursor.execute("SELECT value FROM config WHERE key='maker_fee'")
+        if not self.cursor.fetchone(): 
+            self.cursor.execute("INSERT INTO config (key, value) VALUES (?, ?)", ('maker_fee', 0.0016))
+
+        # 2. TAKER FEE (Estándar 0.07% = 0.0007)
+        self.cursor.execute("SELECT value FROM config WHERE key='taker_fee'")
+        if not self.cursor.fetchone(): 
+            self.cursor.execute("INSERT INTO config (key, value) VALUES (?, ?)", ('taker_fee', 0.0007))
+
         self.conn.commit()
 
     def check_and_seed_accounts(self):

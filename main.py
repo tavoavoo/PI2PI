@@ -75,9 +75,9 @@ class P2PManagerApp(ctk.CTk):
 
         # Variables Globales
         self.STOCK_USDT = 0.0
-        self.COMISION_VENTA = 0.002
+        self.COMISION_VENTA = 0.0016
         self.load_config()
-        
+        self._migrar_tabla_cierres_si_necesario()
         # --- GUI SETUP ---
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -116,14 +116,36 @@ class P2PManagerApp(ctk.CTk):
     # --- LÓGICA CORE ---
     def load_config(self):
         try:
+            # MAKER (Tu tasa Bronce: 0.16%)
             self.cursor.execute("SELECT value FROM config WHERE key='comision_maker'")
             res = self.cursor.fetchone()
-            self.COMISION_VENTA = float(res[0]) if res else 0.002
+            self.COMISION_MAKER = float(res[0]) if res else 0.0016 
+            
+            # TAKER (Tasa Estándar: 0.07%)
+            self.cursor.execute("SELECT value FROM config WHERE key='taker_fee'")
+            res_t = self.cursor.fetchone()
+            self.COMISION_TAKER = float(res_t[0]) if res_t else 0.0007 
+
+            # STOCK
             self.cursor.execute("SELECT value FROM config WHERE key='stock_usdt'")
-            res = self.cursor.fetchone()
-            self.STOCK_USDT = float(res[0]) if res else 0.0
+            res_s = self.cursor.fetchone()
+            self.STOCK_USDT = float(res_s[0]) if res_s else 0.0
         except: pass
 
+    def _migrar_tabla_cierres_si_necesario(self):
+            """
+            Actualiza la tabla 'cierres' para soportar el tracking de stock.
+            Solo se ejecuta una vez (al iniciar la app).
+            """
+            try:
+                self.cursor.execute("ALTER TABLE cierres ADD COLUMN stock_cierre_usdt REAL DEFAULT 0")
+                self.cursor.execute("ALTER TABLE cierres ADD COLUMN costo_cierre_ars REAL DEFAULT 0")
+                self.conn.commit()
+                print("✅ Tabla 'cierres' actualizada con tracking de stock")
+            except sqlite3.OperationalError:
+                pass
+            except Exception as e:
+                print(f"⚠️ Error migración cierres: {e}")
     def fetch_binance_history(self, ak, ask):
         return self.api_client.fetch_history_incremental(ak, ask, self.cursor)
 
@@ -142,7 +164,7 @@ class P2PManagerApp(ctk.CTk):
 
     def obtener_ppp(self, moneda):
         try:
-            # 1. RECUPERAR EL ANCLAJE (El "Polvo" o Stock Residual de turnos anteriores)
+            # 1. RECUPERAR EL ANCLAJE (El "Polvo" o Stock Residual)
             self.cursor.execute("SELECT value FROM config WHERE key='anchor_fiat'")
             res_af = self.cursor.fetchone()
             anchor_fiat = float(res_af[0]) if res_af else 0.0
@@ -152,38 +174,35 @@ class P2PManagerApp(ctk.CTk):
             anchor_usdt = float(res_au[0]) if res_au else 0.0
 
             # 2. TRAER LAS COMPRAS NUEVAS DEL TURNO ACTUAL
-            # Seleccionamos USDT, Cotización y Rol de las operaciones activas (archivado=0)
             self.cursor.execute("SELECT monto_usdt, cotizacion, rol FROM operaciones WHERE tipo='Compra' AND moneda=? AND archivado=0", (moneda,))
             compras = self.cursor.fetchall()
             
             new_fiat_ajustado = 0.0
             new_usdt_total = 0.0
 
-            # 3. PROCESAR CADA COMPRA CON TU REGLA DE NEGOCIO
+            # 3. CÁLCULO DINÁMICO (Costo Real de Ciclo)
             for usdt, precio_base, rol in compras:
-                # Definimos el sobrecosto operativo según si fuiste Maker o Taker
-                sobrecosto = 0.0
-                
-                # Normalizamos el texto del rol (evita errores por mayúsculas/minúsculas)
-                rol_str = str(rol).strip().title() if rol else ""
+                rol_str = str(rol).strip().title() if rol else "Maker"
 
-                if rol_str == "Maker":
-                    sobrecosto = 0.40  # Tu costo fijo Maker
-                elif rol_str == "Taker":
-                    sobrecosto = 0.07  # Tu costo fijo Taker
+                # A. Tasa de Entrada (IDA): Lo que pagaste al comprar
+                tasa_ida = self.COMISION_MAKER if rol_str == "Maker" else self.COMISION_TAKER
                 
-                # El precio para el promedio es: Lo que pagaste + El costo operativo
-                precio_ajustado = precio_base + sobrecosto
+                # B. Tasa de Salida (VUELTA): Lo que pagarás al vender (Asumimos Maker)
+                tasa_vuelta = self.COMISION_MAKER 
                 
-                # Calculamos el peso ponderado de esta orden específica
-                gasto_orden = usdt * precio_ajustado
+                # Costo total porcentual del ciclo
+                pct_ciclo = tasa_ida + tasa_vuelta
+                
+                # Precio de Equilibrio (Break-even)
+                # Ejemplo: Precio * (1 + 0.0016 + 0.0016)
+                precio_ajustado = precio_base * (1 + pct_ciclo)
                 
                 # Acumulamos
+                gasto_orden = usdt * precio_ajustado
                 new_fiat_ajustado += gasto_orden
                 new_usdt_total += usdt
 
             # 4. CÁLCULO PONDERADO FINAL
-            # (Plata vieja + Plata nueva) / (Stock viejo + Stock nuevo)
             total_fiat = anchor_fiat + new_fiat_ajustado
             total_usdt = anchor_usdt + new_usdt_total
 
@@ -195,13 +214,31 @@ class P2PManagerApp(ctk.CTk):
             print(f"Error calculando PPP: {e}")
             return 0.0
 
-    # --- CÁLCULO DE GANANCIA REAL (CORREGIDO: SIN DOBLE COMISIÓN) ---
+# --- CÁLCULO DE GANANCIA REAL (CORREGIDO) ---
     def calc_ganancia_rango_ars(self, desde_fecha, hasta_fecha, moneda):
-        """ 
-        Calcula la rentabilidad por TRADING usando el NETO ya guardado en DB.
-        """
         try:
-            # Traemos solo Compra/Venta para ignorar Tesorería
+            # PASO 1: RECUPERAR INVENTARIO INICIAL
+            self.cursor.execute(
+                """
+                SELECT stock_cierre_usdt, costo_cierre_ars 
+                FROM cierres 
+                WHERE fecha_cierre < ? 
+                ORDER BY fecha_cierre DESC 
+                LIMIT 1
+                """,
+                (desde_fecha,)
+            )
+            
+            cierre_previo = self.cursor.fetchone()
+            
+            if cierre_previo:
+                stock_inicial_usdt = cierre_previo[0] if cierre_previo[0] else 0.0
+                costo_inicial_ars = cierre_previo[1] if cierre_previo[1] else 0.0
+            else:
+                stock_inicial_usdt = 0.0
+                costo_inicial_ars = 0.0
+            
+            # PASO 2: CALCULAR FLUJO DE CAJA DEL PERÍODO
             query = """
                 SELECT tipo, monto_ars, monto_usdt 
                 FROM operaciones 
@@ -213,45 +250,50 @@ class P2PManagerApp(ctk.CTk):
             self.cursor.execute(query, (moneda, desde_fecha, hasta_fecha))
             movimientos = self.cursor.fetchall()
 
-            flujo_ars = 0.0      
-            stock_delta = 0.0    
+            flujo_ars = 0.0
+            compras_ars = 0.0
+            compras_usdt = 0.0
+            ventas_usdt = 0.0
 
             for tipo, ars, usdt_neto in movimientos:
-                
                 if tipo == 'Venta':
-                    # Entran Pesos (+), Salen USDT del stock (-)
-                    # Como usdt_neto ya tiene la comisión sumada (es lo que salió de tu wallet), restamos directo.
                     flujo_ars += ars
-                    stock_delta -= usdt_neto 
-                
+                    ventas_usdt += usdt_neto
                 elif tipo == 'Compra':
-                    # Salen Pesos (-), Entran USDT al stock (+)
-                    # Como usdt_neto ya tiene la comisión restada (es lo que entró a tu wallet), sumamos directo.
                     flujo_ars -= ars
-                    stock_delta += usdt_neto
+                    compras_ars += ars
+                    compras_usdt += usdt_neto
 
-            # 2. Valorización del Inventario Sobrante
-            valor_stock = 0.0
+            # PASO 3: CALCULAR STOCK FINAL Y SU COSTO
+            stock_final_usdt = stock_inicial_usdt + compras_usdt - ventas_usdt
             
-            # Si te quedó saldo a favor o en contra de USDT, lo valorizamos
-            if abs(stock_delta) > 0.01:
-                # Usamos el PPP actual para darle valor a esos USDT sobrantes
-                precio_ref = self.obtener_ppp(moneda)
+            # --- [CORRECCIÓN APLICADA AQUÍ] ---
+            if compras_usdt > 0:
+                # Si hubo compras, ponderamos con lo nuevo
+                costo_total = costo_inicial_ars + compras_ars
+                stock_total = stock_inicial_usdt + compras_usdt
+                precio_promedio = costo_total / stock_total if stock_total > 0 else 0
+                costo_final_ars = stock_final_usdt * precio_promedio
+            else:
+                # Si NO hubo compras, mantenemos el precio anterior O usamos el PPP global
+                if stock_inicial_usdt > 0:
+                    precio_referencia = costo_inicial_ars / stock_inicial_usdt
+                else:
+                    # AQUÍ ESTABA EL ERROR: Antes ponía 0.0
+                    # Ahora buscamos el PPP Global como respaldo
+                    precio_referencia = self.obtener_ppp(moneda)
                 
-                # Fallback: Si PPP es 0, intentamos usar promedio de venta
-                if precio_ref == 0:
-                     try:
-                         total_v_ars = sum(m[1] for m in movimientos if m[0]=='Venta')
-                         total_v_usdt = sum(m[2] for m in movimientos if m[0]=='Venta')
-                         if total_v_usdt > 0: precio_ref = total_v_ars / total_v_usdt
-                     except: pass
-                
-                valor_stock = stock_delta * precio_ref
+                # Calculamos el costo del inventario final (que puede ser negativo si vendiste sin stock)
+                costo_final_ars = stock_final_usdt * precio_referencia
 
-            return flujo_ars + valor_stock
+            # PASO 4: GANANCIA REALIZADA + NO REALIZADA
+            variacion_inventario = costo_final_ars - costo_inicial_ars
+            ganancia_total = flujo_ars + variacion_inventario
+
+            return ganancia_total
 
         except Exception as e:
-            print(f"Error calculando ganancia: {e}")
+            print(f"❌ Error calculando ganancia: {e}")
             return 0.0
 
     # --- ESTA ES LA FUNCIÓN BLINDADA (Persistencia Real) ---
@@ -278,11 +320,40 @@ class P2PManagerApp(ctk.CTk):
         self.ask_confirm("Cerrar Turno", f"¿Confirmar cierre de caja?\n(Turno iniciado: {inicio})", self.do_cierre_sesion)
     
     def do_cierre_sesion(self):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.cursor.execute("INSERT INTO cierres (fecha_cierre) VALUES (?)", (now,))
-        self.conn.commit()
-        self.refresh_all_views()
-        self.show_info("Turno Cerrado", "Caja reiniciada. Comienza un nuevo turno.")
+        """
+        Cierre de turno MEJORADO con snapshot de inventario.
+        Guarda el stock remanente y su costo para el próximo turno.
+        """
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 1. Capturamos el estado actual del inventario
+            stock_actual = self.STOCK_USDT
+            ppp_actual = self.obtener_ppp("ARS")
+            costo_stock = stock_actual * ppp_actual
+            
+            # 2. Guardamos el cierre CON la foto del inventario
+            self.cursor.execute(
+                """
+                INSERT INTO cierres (fecha_cierre, stock_cierre_usdt, costo_cierre_ars) 
+                VALUES (?, ?, ?)
+                """,
+                (now, stock_actual, costo_stock)
+            )
+            
+            self.conn.commit()
+            self.refresh_all_views()
+            
+            # 3. Mostramos resumen visual
+            msg = f"📦 Stock Remanente: {stock_actual:.2f} USDT\n"
+            msg += f"💰 Costo Promedio: ${ppp_actual:,.2f}\n"
+            msg += f"📊 Valor Total: ${costo_stock:,.2f}\n\n"
+            msg += "Este inventario se arrastrará al próximo turno."
+            
+            self.show_info("Turno Cerrado", msg)
+            
+        except Exception as e:
+            self.show_error("Error", f"No se pudo cerrar el turno:\n{str(e)}")
 
     def reiniciar_ppp(self):
         try:
@@ -324,7 +395,7 @@ class P2PManagerApp(ctk.CTk):
         """
         self.ask_confirm(
             "Recalcular PPP", 
-            "¿Querés resetear el anclaje y recalcular el PPP?\n\nEsto ignorará el historial antiguo y tomará solo las compras ACTIVAS usando la nueva lógica (+0.40 Maker / +0.07 Taker).", 
+            "¿Querés resetear el anclaje y recalcular el PPP?\n\nEsto ignorará el historial antiguo y tomará solo las compras ACTIVAS usando la nueva lógica Bronce (Dinámica).", 
             self._do_recalculo_ppp
         )
 

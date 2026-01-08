@@ -96,84 +96,89 @@ class BinanceClient:
         return all_orders
 
     def _parse_orders(self, orders, tipo, existing_ids):
-        """
-        Lógica Contable Exacta (Corrección Usuario):
-        - TAKER: Usa 'takerAmount' (Si existe y es > 0).
-        - MAKER: SIEMPRE 'amount' + 'commission'.
-          Binance reporta el monto tradeado sin restar la comisión en el campo 'amount'.
-          Por tanto, el impacto real en la cuenta es la suma de ambos.
-        """
-        parsed = []
-        
-        for order in orders:
-            order_id = str(order.get("orderNumber"))
+            """
+            Lógica Contable Exacta (Corrección Definitiva V3):
+            - COMPRA: Stock = Amount - Fee (Lo que entra al bolsillo).
+            - VENTA:  Stock = Amount + Fee (Lo que sale de la billetera).
+            """
+            parsed = []
             
-            # Filtros básicos
-            if order_id in existing_ids: continue
-            if order.get("orderStatus") != "COMPLETED": continue
-
-            # --- DATOS GENERALES ---
-            ts = order.get("createTime", 0)
-            fecha = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
-            
-            fiat_total = float(order.get("totalPrice", 0))
-            moneda = order.get("fiat", "ARS")
-            cotizacion = float(order.get("unitPrice", 0)) # Precio pactado limpio
-            
-            # --- LÓGICA DE ROL Y MONTO NETO ---
-            # Variables crudas
-            raw_amount = float(order.get("amount", 0))          # Monto tradeado
-            raw_comm = float(order.get("commission", 0))        # Comisión estándar
-            raw_taker_comm = float(order.get("takerCommission", 0)) # Comisión Taker
-            raw_taker_amt = float(order.get("takerAmount", 0))  # Monto Taker
-
-            # Determinación de Rol
-            # Si hay comisión de Taker explícita, es Taker.
-            if raw_taker_comm > 0 or float(order.get("takerCommissionRate", 0)) > 0:
-                rol = "Taker"
-                fee_usdt = raw_taker_comm
-                # Para Taker, usamos takerAmount si Binance lo provee
-                usdt_real = raw_taker_amt if raw_taker_amt > 0 else (raw_amount + raw_taker_comm)
-            else:
-                rol = "Maker"
-                fee_usdt = raw_comm
+            for order in orders:
+                order_id = str(order.get("orderNumber"))
                 
-                # CORRECCIÓN MAKER: SIEMPRE SUMAR
-                # Según instrucción: "Siempre así sea orden de compra o venta sumale la comisión"
-                usdt_real = raw_amount + raw_comm
+                # Filtros básicos
+                if order_id in existing_ids: continue
+                if order.get("orderStatus") != "COMPLETED": continue
 
-            # --- DETECTOR DE BANCO (Para sugerir) ---
-            metodo_bruto = order.get("payMethodName", "")
-            banco_detectado = "Por Clasificar"
-            
-            # Mapeo simple
-            if "Brubank" in metodo_bruto: banco_detectado = "Brubank"
-            elif "MercadoPago" in metodo_bruto: banco_detectado = "MercadoPago"
-            elif "Lemon" in metodo_bruto: banco_detectado = "Lemon Cash"
-            elif "Uala" in metodo_bruto: banco_detectado = "Ualá"
-            elif "Galicia" in metodo_bruto: banco_detectado = "Galicia"
-            elif "Prex" in metodo_bruto: banco_detectado = "Prex"
-            elif "Santander" in metodo_bruto: banco_detectado = "Santander"
-            elif "BBVA" in metodo_bruto: banco_detectado = "BBVA"
+                # --- DATOS GENERALES ---
+                ts = order.get("createTime", 0)
+                fecha = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                
+                fiat_total = float(order.get("totalPrice", 0))
+                moneda = order.get("fiat", "ARS")
+                cotizacion = float(order.get("unitPrice", 0)) # Precio pactado limpio
+                
+                # --- LÓGICA DE ROL Y MONTO NETO ---
+                # Variables crudas
+                raw_amount = float(order.get("amount", 0))          # Monto tradeado (lo que recibe/envía el cliente)
+                raw_comm = float(order.get("commission", 0))        # Comisión estándar
+                raw_taker_comm = float(order.get("takerCommission", 0)) # Comisión Taker
+                
+                # Determinación de Rol
+                # Si hay comisión Taker explícita, usamos esa. Si no, la estándar.
+                if raw_taker_comm > 0 or float(order.get("takerCommissionRate", 0)) > 0:
+                    rol = "Taker"
+                    fee_usdt = raw_taker_comm
+                else:
+                    rol = "Maker"
+                    fee_usdt = raw_comm
 
-            nick = order.get("counterPartNickName", "Desconocido")
+                # --- LÓGICA MAESTRA DE STOCK (CORREGIDA) ---
+                
+                if tipo == "Compra":
+                    # COMPRA: Te depositan el monto MENOS la comisión.
+                    # Ejemplo: Compras 100, Fee 0.1 -> Entran 99.9
+                    usdt_real = raw_amount - fee_usdt
+                else:
+                    # VENTA: De tu billetera sale el monto al cliente MÁS la comisión.
+                    # Ejemplo: Vendes 19.38, Fee 0.03 -> Binance te descuenta 19.41
+                    usdt_real = raw_amount + fee_usdt
 
-            parsed.append({
-                'fecha': fecha,
-                'nick': nick,
-                'tipo': tipo,
-                'fiat': fiat_total,
-                'usdt_nominal': usdt_real,  # Dato corregido (Amount + Fee)
-                'cot': cotizacion,          
-                'fee': fee_usdt,
-                'moneda': moneda,
-                'order_id': order_id,
-                'rol': rol,
-                'stock_impact': usdt_real,  # Impacto en stock
-                'banco_api': banco_detectado
-            })
-            
-        return parsed
+                # Redondeo de seguridad para evitar decimales flotantes infinitos
+                usdt_real = round(usdt_real, 8)
+
+                # --- DETECTOR DE BANCO (Para sugerir) ---
+                metodo_bruto = order.get("payMethodName", "")
+                banco_detectado = "Por Clasificar"
+                
+                # Mapeo simple
+                if "Brubank" in metodo_bruto: banco_detectado = "Brubank"
+                elif "MercadoPago" in metodo_bruto: banco_detectado = "MercadoPago"
+                elif "Lemon" in metodo_bruto: banco_detectado = "Lemon Cash"
+                elif "Uala" in metodo_bruto: banco_detectado = "Ualá"
+                elif "Galicia" in metodo_bruto: banco_detectado = "Galicia"
+                elif "Prex" in metodo_bruto: banco_detectado = "Prex"
+                elif "Santander" in metodo_bruto: banco_detectado = "Santander"
+                elif "BBVA" in metodo_bruto: banco_detectado = "BBVA"
+
+                nick = order.get("counterPartNickName", "Desconocido")
+
+                parsed.append({
+                    'fecha': fecha,
+                    'nick': nick,
+                    'tipo': tipo,
+                    'fiat': fiat_total,
+                    'usdt_nominal': usdt_real,  # Dato corregido (Impacto Real)
+                    'cot': cotizacion,          
+                    'fee': fee_usdt,
+                    'moneda': moneda,
+                    'order_id': order_id,
+                    'rol': rol,
+                    'stock_impact': usdt_real,  # Impacto en stock
+                    'banco_api': banco_detectado
+                })
+                
+            return parsed
 
     # --- MÉTODOS DE SCRAPING (Sin cambios) ---
     def fetch_p2p_depth(self, trade_type, fiat, asset, rows=20, db_connection=None):
