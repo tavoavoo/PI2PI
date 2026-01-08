@@ -442,8 +442,114 @@ class HistorialView(ctk.CTkFrame):
             self.ejecutar_sync_silencioso(k, s)
         ctk.CTkButton(modal.content_frame, text="GUARDAR", command=save_keys, fg_color="#f39c12", text_color="black").pack(pady=20)
 
-    def modal_editar(self, oid): pass 
-    
+    # --- EDICIÓN COMPLETA E INTELIGENTE ---
+    def modal_editar(self, oid):
+        # 1. Obtener datos actuales de la base de datos
+        self.c.cursor.execute("SELECT fecha, nickname, tipo, banco, monto_ars, monto_usdt, cotizacion, moneda FROM operaciones WHERE id=?", (oid,))
+        data = self.c.cursor.fetchone()
+        if not data: return
+
+        fecha, nick, tipo, old_banco, old_fiat, old_usdt, old_cot, moneda = data
+        
+        # 2. Crear Modal
+        modal = ModernModal(self.c, f"Editar Op #{oid} - {tipo}", height=450)
+        
+        # --- Campos de Edición ---
+        
+        # Banco
+        ctk.CTkLabel(modal.content_frame, text="Banco / Cuenta:", font=("Arial", 12, "bold")).pack(anchor="w", pady=(10,0))
+        self.c.cursor.execute("SELECT nombre FROM cuentas WHERE estado='Activo' ORDER BY nombre")
+        bancos = [b[0] for b in self.c.cursor.fetchall()]
+        cbo_banco = ctk.CTkOptionMenu(modal.content_frame, values=bancos)
+        cbo_banco.pack(fill="x", pady=5)
+        
+        # Seleccionar el banco actual o el primero si era "Por Clasificar"
+        if old_banco in bancos: cbo_banco.set(old_banco)
+        elif old_banco == "Por Clasificar": cbo_banco.set(bancos[0] if bancos else "Sin Cuentas")
+        else: cbo_banco.set(old_banco) # Caso raro si el banco fue borrado pero la op sigue
+        
+        # Monto Fiat (ARS)
+        ctk.CTkLabel(modal.content_frame, text="Monto Total (ARS):", font=("Arial", 12, "bold")).pack(anchor="w", pady=(10,0))
+        entry_fiat = ctk.CTkEntry(modal.content_frame)
+        entry_fiat.insert(0, str(old_fiat))
+        entry_fiat.pack(fill="x", pady=5)
+        
+        # Cantidad USDT
+        ctk.CTkLabel(modal.content_frame, text="Cantidad USDT:", font=("Arial", 12, "bold")).pack(anchor="w", pady=(10,0))
+        entry_usdt = ctk.CTkEntry(modal.content_frame)
+        entry_usdt.insert(0, str(old_usdt))
+        entry_usdt.pack(fill="x", pady=5)
+
+        # Cotización
+        ctk.CTkLabel(modal.content_frame, text="Precio / Cotización:", font=("Arial", 12, "bold")).pack(anchor="w", pady=(10,0))
+        entry_cot = ctk.CTkEntry(modal.content_frame)
+        entry_cot.insert(0, str(old_cot))
+        entry_cot.pack(fill="x", pady=5)
+
+        # Función de Guardado Inteligente
+        def guardar_cambios():
+            try:
+                # Validar números
+                new_fiat = float(entry_fiat.get())
+                new_usdt = float(entry_usdt.get())
+                new_cot = float(entry_cot.get())
+                new_banco = cbo_banco.get()
+                
+                if not new_banco or new_banco == "Sin Cuentas":
+                    self.c.show_error("Error", "Debes seleccionar un banco válido.")
+                    return
+
+                # --- FASE 1: REVERTIR LO VIEJO ---
+                # Si el banco viejo estaba clasificado, devolvemos/quitamos el saldo incorrecto
+                if old_banco != "Por Clasificar":
+                    if tipo == "Compra": # Habíamos restado ARS, los devolvemos
+                        self.c.cursor.execute("UPDATE cuentas SET saldo = saldo + ? WHERE nombre=?", (old_fiat, old_banco))
+                    else: # Venta: Habíamos sumado ARS, los quitamos
+                        self.c.cursor.execute("UPDATE cuentas SET saldo = saldo - ? WHERE nombre=?", (old_fiat, old_banco))
+                
+                # Revertir Stock USDT (Siempre se revierte porque afecta stock global)
+                if tipo == "Compra": # Sumamos USDT, ahora los quitamos
+                    self.c.cursor.execute("UPDATE config SET value = CAST(value AS REAL) - ? WHERE key='stock_usdt'", (old_usdt,))
+                    self.c.STOCK_USDT -= old_usdt
+                else: # Restamos USDT, ahora los devolvemos
+                    self.c.cursor.execute("UPDATE config SET value = CAST(value AS REAL) + ? WHERE key='stock_usdt'", (old_usdt,))
+                    self.c.STOCK_USDT += old_usdt
+
+                # --- FASE 2: APLICAR LO NUEVO ---
+                # Aplicar saldo al nuevo banco seleccionado
+                if tipo == "Compra":
+                    self.c.cursor.execute("UPDATE cuentas SET saldo = saldo - ? WHERE nombre=?", (new_fiat, new_banco))
+                else:
+                    self.c.cursor.execute("UPDATE cuentas SET saldo = saldo + ? WHERE nombre=?", (new_fiat, new_banco))
+                
+                # Aplicar nuevo Stock USDT
+                if tipo == "Compra":
+                    self.c.cursor.execute("UPDATE config SET value = CAST(value AS REAL) + ? WHERE key='stock_usdt'", (new_usdt,))
+                    self.c.STOCK_USDT += new_usdt
+                else:
+                    self.c.cursor.execute("UPDATE config SET value = CAST(value AS REAL) - ? WHERE key='stock_usdt'", (new_usdt,))
+                    self.c.STOCK_USDT -= new_usdt
+
+                # --- FASE 3: ACTUALIZAR REGISTRO ---
+                self.c.cursor.execute("""
+                    UPDATE operaciones 
+                    SET banco=?, monto_ars=?, monto_usdt=?, cotizacion=?
+                    WHERE id=?
+                """, (new_banco, new_fiat, new_usdt, new_cot, oid))
+                
+                self.c.conn.commit()
+                self.c.refresh_all_views()
+                self.renderizar_pagina() # Refrescar tabla local
+                modal.close()
+                self.c.show_info("Éxito", "Operación corregida y saldos ajustados correctamente.")
+
+            except ValueError:
+                self.c.show_error("Error", "Los campos numéricos deben ser válidos.")
+            except Exception as e:
+                self.c.show_error("Error Crítico", str(e))
+
+        ctk.CTkButton(modal.content_frame, text="GUARDAR CAMBIOS", fg_color="#27ae60", hover_color="#2ecc71", command=guardar_cambios).pack(pady=20, fill="x")
+
     def exportar_excel(self): 
         try:
             filename = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])

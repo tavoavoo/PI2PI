@@ -224,7 +224,7 @@ class TesoreriaView(ctk.CTkFrame):
             w = self.bank_widgets[i]
             w["frame"].pack(fill="x", pady=4)
             w["nom"].configure(text=nom)
-            w["saldo"].configure(text=f"{simbolo} {saldo:,.0f}")
+            w["saldo"].configure(text=f"{simbolo} {saldo:,.2f}")
             w["pb"].configure(progress_color=col_bar)
             w["pb"].set(min(pct, 1.0))
             w["lim"].configure(text=f"{pct*100:.0f}% Fiscal")
