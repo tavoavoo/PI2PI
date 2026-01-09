@@ -496,9 +496,9 @@ class DashboardView(ctk.CTkFrame):
                 elif desvio < -0.5: clima_txt = "Deprimido (Comprar)"; color_clima = "#2ecc71"
             if stock_usdt > 10:
                 roi = (((market_ask_1 * (1 - maker_fee)) / ppp) - 1) * 100 if ppp > 0 else 0.0
-                if roi > 0.5: txt_sell, col_sell, det_sell = f"🟢 VENDER (+{roi:.1f}%)", "#2ecc71", f"Mercado {clima_txt}."
-                elif roi > -0.5: txt_sell, col_sell, det_sell = f"🔵 ROTAR ({roi:.1f}%)", "#2980b9", "Sales hecho."
-                else: txt_sell, col_sell, det_sell = f"🛑 HOLDEAR ({roi:.1f}%)", "#c0392b", f"Clima: {clima_txt}"
+                if roi > 0.5: txt_sell, col_sell, det_sell = f"🟢 VENDER (+{roi:.2f}%)", "#2ecc71", f"Mercado {clima_txt}."
+                elif roi > -0.5: txt_sell, col_sell, det_sell = f"🔵 ROTAR ({roi:.2f}%)", "#2980b9", "Sales hecho."
+                else: txt_sell, col_sell, det_sell = f"🛑 HOLDEAR ({roi:.2f}%)", "#c0392b", f"Clima: {clima_txt}"
             else: txt_sell, col_sell, det_sell = f"CLIMA: {clima_txt}", color_clima, f"Canje CCL: {gap_ccl:+.2f}%"
             self.lbl_sell_action.configure(text=txt_sell, text_color=col_sell)
             self.lbl_sell_detail.configure(text=det_sell)
