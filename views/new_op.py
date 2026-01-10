@@ -1,173 +1,146 @@
 import customtkinter as ctk
-import math
-import re
 from datetime import datetime
 from utils.ui_components import ModernModal
 
-class NewOpView(ctk.CTkFrame):
+class NuevaOperacionView(ctk.CTkFrame):
     def __init__(self, parent, controller):
         super().__init__(parent, fg_color="transparent")
         self.c = controller
-        self.locked = False
-        self.last_edited = "fiat"
-        self.tipo_op = "Compra"
         
-        # Batch (Puedes dejarlo básico o expandirlo luego)
-        parser_frame = ctk.CTkFrame(self, fg_color="#1a1a1a")
-        parser_frame.pack(fill="x", padx=40, pady=10)
-        ctk.CTkLabel(parser_frame, text="Pegar Ordenes (Batch - Chat o Recibo Completo):", font=("Inter", 12, "bold"), text_color="#3498db").pack(anchor="w", padx=15)
-        self.txt_paste = ctk.CTkTextbox(parser_frame, height=100)
-        self.txt_paste.pack(fill="x", padx=15, pady=5)
-        ctk.CTkButton(parser_frame, text="⚡ PROCESAR LOTE", fg_color="#27ae60", height=40, command=self.process_batch).pack(fill="x", padx=15, pady=10)
+        # --- AUTO-MIGRACIÓN (Agregar columna notas si no existe) ---
+        self.verificar_columna_notas()
 
-        # Manual
-        self.main_box = ctk.CTkFrame(self, fg_color="#1e1e1e", corner_radius=15)
-        self.main_box.pack(padx=40, pady=10, fill="both", expand=True)
+        # Título
+        ctk.CTkLabel(self, text="Carga Manual de Operación", font=("Arial", 24, "bold")).pack(pady=20)
         
-        moneda_frame = ctk.CTkFrame(self.main_box, fg_color="transparent")
-        moneda_frame.pack(pady=10)
-        ctk.CTkLabel(moneda_frame, text="MONEDA:").pack(side="left", padx=5)
-        self.seg_moneda = ctk.CTkSegmentedButton(moneda_frame, values=["ARS", "PEN"], command=self.update_bancos)
-        self.seg_moneda.set("ARS")
-        self.seg_moneda.pack(side="left", padx=5)
-
-        self.seg_tipo = ctk.CTkSegmentedButton(self.main_box, values=["Compra", "Venta"], command=self.cambio_tipo)
-        self.seg_tipo.set("Compra")
-        self.seg_tipo.pack(fill="x", padx=40, pady=5)
-
-        # SELECTOR DE ROL
-        ctk.CTkLabel(self.main_box, text="ROL:", font=("Arial", 10, "bold")).pack(pady=(5,0))
-        self.seg_rol = ctk.CTkSegmentedButton(self.main_box, values=["Maker", "Taker"])
-        self.seg_rol.set("Maker")
-        self.seg_rol.pack(pady=5)
-
-        grid = ctk.CTkFrame(self.main_box, fg_color="transparent")
-        grid.pack(padx=20, pady=5)
-        ctk.CTkLabel(grid, text="Banco:").grid(row=0, column=0, sticky="e")
-        self.banco_var = ctk.CTkOptionMenu(grid, width=180)
-        self.banco_var.grid(row=0, column=1, padx=5)
-        ctk.CTkLabel(grid, text="Nick:").grid(row=0, column=2, sticky="e")
-        self.entry_nick = ctk.CTkEntry(grid, width=180)
-        self.entry_nick.grid(row=0, column=3, padx=5)
-        ctk.CTkLabel(grid, text="Cotización:").grid(row=1, column=0, sticky="e", pady=10)
-        self.var_cot = ctk.StringVar()
-        self.entry_cot = ctk.CTkEntry(grid, textvariable=self.var_cot, width=180)
-        self.entry_cot.grid(row=1, column=1, padx=5)
-        ctk.CTkLabel(grid, text="Comisión (%):").grid(row=1, column=2, sticky="e")
-        fee_frame = ctk.CTkFrame(grid, fg_color="transparent")
-        fee_frame.grid(row=1, column=3, sticky="w", padx=5)
-        self.var_fee = ctk.StringVar()
-        self.entry_fee = ctk.CTkEntry(fee_frame, textvariable=self.var_fee, width=80)
-        self.entry_fee.pack(side="left")
+        # Formulario
+        form_frame = ctk.CTkFrame(self, fg_color="#1a1a1a", corner_radius=10)
+        form_frame.pack(fill="both", expand=True, padx=40, pady=10)
         
-        m_frame = ctk.CTkFrame(self.main_box, fg_color="transparent")
-        m_frame.pack(pady=5)
-        self.var_fiat = ctk.StringVar()
-        self.var_usdt = ctk.StringVar()
-        ctk.CTkEntry(m_frame, textvariable=self.var_fiat, width=140, font=("Arial", 16)).pack(side="left", padx=(10, 2))
-        self.lbl_fiat_unit = ctk.CTkLabel(m_frame, text="ARS", font=("Arial", 14, "bold"), text_color="gray")
-        self.lbl_fiat_unit.pack(side="left", padx=(0, 10))
-        ctk.CTkLabel(m_frame, text="↔", font=("Arial", 20)).pack(side="left")
-        ctk.CTkEntry(m_frame, textvariable=self.var_usdt, width=140, font=("Arial", 16)).pack(side="left", padx=(10, 2))
-        ctk.CTkLabel(m_frame, text="USDT", font=("Arial", 14, "bold"), text_color="#2ecc71").pack(side="left", padx=(0, 10))
-        self.lbl_neto = ctk.CTkLabel(self.main_box, text="---", text_color="#aaaaaa", font=("Inter", 12, "bold"))
-        self.lbl_neto.pack(pady=5)
-        self.btn_ok = ctk.CTkButton(self.main_box, text="GUARDAR MANUALMENTE", height=30, command=self.guardar)
-        self.btn_ok.pack(pady=10)
+        # --- FILA 1: TIPO Y FECHA ---
+        ctk.CTkLabel(form_frame, text="Tipo de Movimiento:", font=("Arial", 14, "bold")).grid(row=0, column=0, padx=20, pady=(20,5), sticky="w")
+        self.tipo_var = ctk.StringVar(value="Compra")
+        self.combo_tipo = ctk.CTkOptionMenu(form_frame, variable=self.tipo_var, values=["Compra", "Venta"])
+        self.combo_tipo.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
+        
+        self.lbl_tipo_desc = ctk.CTkLabel(form_frame, text="Compra: Sale Pesos (Gasto/Inversión)\nVenta: Sale Crypto (Retiro/Venta)", font=("Arial", 11), text_color="gray")
+        self.lbl_tipo_desc.grid(row=2, column=0, padx=20, pady=0, sticky="w")
 
-        self.var_cot.trace_add("write", lambda *a: self.calc_bidireccional("cot"))
-        self.var_fiat.trace_add("write", lambda *a: self.calc_bidireccional("fiat"))
-        self.var_usdt.trace_add("write", lambda *a: self.calc_bidireccional("usdt"))
-        self.var_fee.trace_add("write", lambda *a: self.calc_neto_display())
+        ctk.CTkLabel(form_frame, text="Fecha (dd/mm/aaaa):", font=("Arial", 14, "bold")).grid(row=0, column=1, padx=20, pady=(20,5), sticky="w")
+        self.entry_fecha = ctk.CTkEntry(form_frame)
+        self.entry_fecha.insert(0, datetime.now().strftime("%d/%m/%Y"))
+        self.entry_fecha.grid(row=1, column=1, padx=20, pady=5, sticky="ew")
+
+        # --- FILA 2: MONTOS ---
+        ctk.CTkLabel(form_frame, text="Cantidad USDT (0 si es solo Pesos):", font=("Arial", 14, "bold")).grid(row=3, column=0, padx=20, pady=(20,5), sticky="w")
+        self.entry_usdt = ctk.CTkEntry(form_frame, placeholder_text="0.00")
+        self.entry_usdt.grid(row=4, column=0, padx=20, pady=5, sticky="ew")
+        
+        ctk.CTkLabel(form_frame, text="Monto Total ARS:", font=("Arial", 14, "bold")).grid(row=3, column=1, padx=20, pady=(20,5), sticky="w")
+        self.entry_ars = ctk.CTkEntry(form_frame, placeholder_text="0.00")
+        self.entry_ars.grid(row=4, column=1, padx=20, pady=5, sticky="ew")
+
+        # --- FILA 3: COTIZACIÓN Y BANCO ---
+        ctk.CTkLabel(form_frame, text="Cotización / Precio (Opcional):", font=("Arial", 14, "bold")).grid(row=5, column=0, padx=20, pady=(20,5), sticky="w")
+        self.entry_cot = ctk.CTkEntry(form_frame, placeholder_text="Ej: 1530")
+        self.entry_cot.grid(row=6, column=0, padx=20, pady=5, sticky="ew")
+
+        ctk.CTkLabel(form_frame, text="Banco / Caja:", font=("Arial", 14, "bold")).grid(row=5, column=1, padx=20, pady=(20,5), sticky="w")
+        self.c.cursor.execute("SELECT nombre FROM cuentas WHERE estado='Activo' ORDER BY nombre")
+        bancos = [b[0] for b in self.c.cursor.fetchall()]
+        if not bancos: bancos = ["Efectivo", "Otro"]
+        else: bancos.append("Otro")
+        self.combo_banco = ctk.CTkOptionMenu(form_frame, values=bancos)
+        self.combo_banco.grid(row=6, column=1, padx=20, pady=5, sticky="ew")
+
+        # --- FILA 4: NOTAS INTERNAS (NUEVO) ---
+        ctk.CTkLabel(form_frame, text="Notas Internas (SOLO PARA TI):", font=("Arial", 14, "bold"), text_color="#3498db").grid(row=7, column=0, columnspan=2, padx=20, pady=(20,5), sticky="w")
+        self.entry_notas = ctk.CTkEntry(form_frame, placeholder_text="Ej: Regalo mamá, Devolución préstamo, Envío Perú... (Esto NO sale en el reporte)")
+        self.entry_notas.grid(row=8, column=0, columnspan=2, padx=20, pady=5, sticky="ew")
+
+        # --- FILA 5: CHECKBOX PERSONAL ---
+        self.chk_personal_var = ctk.IntVar(value=0)
+        self.chk_personal = ctk.CTkCheckBox(form_frame, text="Es Movimiento PERSONAL / CAPITAL (No Comercial)", variable=self.chk_personal_var, font=("Arial", 12, "bold"), text_color="#9b59b6")
+        self.chk_personal.grid(row=9, column=0, columnspan=2, padx=20, pady=20, sticky="w")
+
+        # Botón Guardar
+        ctk.CTkButton(self, text="GUARDAR OPERACIÓN", width=200, height=50, fg_color="#27ae60", hover_color="#2ecc71", font=("Arial", 14, "bold"), command=self.guardar).pack(pady=10)
+
+    def verificar_columna_notas(self):
+        """Revisa si existe la columna notas, si no, la agrega."""
+        try:
+            self.c.cursor.execute("PRAGMA table_info(operaciones)")
+            columns = [info[1] for info in self.c.cursor.fetchall()]
+            if "notas" not in columns:
+                self.c.cursor.execute("ALTER TABLE operaciones ADD COLUMN notas TEXT")
+                self.c.conn.commit()
+        except Exception as e: print(f"DB Warning: {e}")
 
     def guardar(self):
         try:
-            moneda = self.seg_moneda.get()
-            fiat = self.c.limpiar_numero(self.var_fiat.get())
-            usdt_input = self.c.limpiar_numero(self.var_usdt.get()) 
-            cot = self.c.limpiar_numero(self.var_cot.get())
-            fee_pct_user = self.c.limpiar_numero(self.var_fee.get())
-            fee_decimal = fee_pct_user / 100.0
-            nick = self.entry_nick.get()
-            banco = self.banco_var.get()
-            rol = self.seg_rol.get() # <--- LEEMOS EL ROL DEL SELECTOR
+            tipo = self.tipo_var.get()
+            fecha_str = self.entry_fecha.get().strip()
             
-            fee_val = math.floor((usdt_input * fee_decimal) * 100) / 100 
-            monto_final_db = 0.0
-            if self.tipo_op == "Compra":
-                monto_final_db = usdt_input - fee_val
-                stock_impact = monto_final_db
-            else:
-                monto_final_db = usdt_input
-                stock_impact = usdt_input
-            
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.c.cursor.execute("INSERT INTO operaciones (fecha, nickname, tipo, banco, monto_ars, monto_usdt, cotizacion, fee, moneda, rol) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                  (now, nick, self.tipo_op, banco, fiat, monto_final_db, cot, fee_val, moneda, rol))
-            
-            if self.tipo_op == "Compra":
-                self.c.update_stock_usdt(stock_impact)
-                self.c.update_saldo_banco(banco, -fiat)
-            else:
-                self.c.update_stock_usdt(-stock_impact) 
-                self.c.update_saldo_banco(banco, fiat)
+            # Parsear Fecha
+            try:
+                dt_obj = datetime.strptime(fecha_str, "%d/%m/%Y")
+                fecha_iso = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                self.c.show_error("Error", "Formato de fecha inválido. Usa dd/mm/aaaa")
+                return
+
+            # Parsear Números
+            try:
+                usdt = float(self.entry_usdt.get().strip() or 0)
+                ars = float(self.entry_ars.get().strip() or 0)
+                cot_str = self.entry_cot.get().strip()
+                cot = float(cot_str) if cot_str else 0.0
                 
-            self.c.cursor.execute("UPDATE cuentas SET acumulado_actual = acumulado_actual + ? WHERE nombre=?", (fiat, banco))
+                if cot == 0 and usdt > 0 and ars > 0: cot = ars / usdt
+            except:
+                self.c.show_error("Error", "Montos inválidos. Usa punto para decimales.")
+                return
+
+            banco = self.combo_banco.get()
+            es_personal = self.chk_personal_var.get()
+            notas = self.entry_notas.get().strip() # Capturamos la nota
+            
+            # --- LÓGICA DE SALDOS ---
+            if banco != "Otro" and banco != "Efectivo": 
+                if tipo == "Compra": 
+                    self.c.cursor.execute("UPDATE cuentas SET saldo = saldo - ? WHERE nombre=?", (ars, banco))
+                else: 
+                    self.c.cursor.execute("UPDATE cuentas SET saldo = saldo + ? WHERE nombre=?", (ars, banco))
+            
+            if usdt > 0:
+                if tipo == "Compra": 
+                    self.c.cursor.execute("UPDATE config SET value = CAST(value AS REAL) + ? WHERE key='stock_usdt'", (usdt,))
+                else: 
+                    self.c.cursor.execute("UPDATE config SET value = CAST(value AS REAL) - ? WHERE key='stock_usdt'", (usdt,))
+
+            # --- GUARDADO EN BD (Incluyendo Notas) ---
+            manual_id = f"MAN-{int(datetime.now().timestamp())}"
+            
+            # Nota para la DB: Guardamos la nota en el campo 'notas' y TAMBIÉN concatenada en 'nickname' 
+            # para que sea fácil de ver en el historial si quieres, pero el reporte limpia eso.
+            # O mejor, guardamos limpio.
+            
+            self.c.cursor.execute("""
+                INSERT INTO operaciones 
+                (fecha, nickname, tipo, banco, monto_ars, monto_usdt, cotizacion, fee, moneda, order_id, rol, archivado, es_personal, notas) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'ARS', ?, 'Manual', 0, ?, ?)
+            """, (fecha_iso, "Carga Manual", tipo, banco, ars, usdt, cot, manual_id, es_personal, notas))
+            
             self.c.conn.commit()
             self.c.refresh_all_views() 
-            self.c.show_info("OK", f"Operación guardada ({rol}).\nImpacto Real: {stock_impact:.2f} USDT")
-            self.var_fiat.set("")
-            self.var_usdt.set("")
-        except Exception as e: self.c.show_error("Error", str(e))
+            
+            self.c.show_info("Éxito", "Operación registrada.")
+            
+            # Limpiar campos clave
+            self.entry_usdt.delete(0, "end")
+            self.entry_ars.delete(0, "end")
+            self.entry_cot.delete(0, "end")
+            self.entry_notas.delete(0, "end")
 
-    # --- Funciones Auxiliares (sin cambios lógicos) ---
-    def calc_bidireccional(self, origen):
-        if self.locked: return
-        self.locked = True
-        try:
-            if origen == "fiat": self.last_edited = "fiat"
-            elif origen == "usdt": self.last_edited = "usdt"
-            cot = self.c.limpiar_numero(self.var_cot.get())
-            if cot > 0:
-                driver = origen if origen != "cot" else self.last_edited
-                if driver == "usdt":
-                    usdt = self.c.limpiar_numero(self.var_usdt.get())
-                    new_fiat = usdt * cot
-                    if abs(self.c.limpiar_numero(self.var_fiat.get()) - new_fiat) > 0.01: self.var_fiat.set(f"{new_fiat:.2f}")
-                elif driver == "fiat":
-                    fiat = self.c.limpiar_numero(self.var_fiat.get())
-                    new_usdt = fiat / cot
-                    if abs(self.c.limpiar_numero(self.var_usdt.get()) - new_usdt) > 0.01: self.var_usdt.set(f"{new_usdt:.2f}")
-        except: pass
-        self.calc_neto_display()
-        self.locked = False
-    def calc_neto_display(self):
-        try:
-            usdt = self.c.limpiar_numero(self.var_usdt.get())
-            fee_pct = self.c.limpiar_numero(self.var_fee.get())
-            fee_val = usdt * (fee_pct/100)
-            fee_trunc = math.floor(fee_val * 100) / 100 
-            if self.tipo_op == "Compra": self.lbl_neto.configure(text=f"📉 RECIBIRÁS NETO: {usdt - fee_trunc:.2f} USDT", text_color="#2cc985")
-            else: self.lbl_neto.configure(text=f"📉 SE DESCONTARÁ: {usdt + fee_trunc:.2f} USDT", text_color="#e3a319")
-        except: pass
-    def update_view(self):
-        self.update_bancos("ARS")
-        self.c.load_config()
-        self.var_fee.set(f"{self.c.COMISION_VENTA * 100:.2f}")
-        self.cambio_tipo("Compra")
-    def update_bancos(self, moneda):
-        self.c.cursor.execute("SELECT nombre FROM cuentas WHERE estado='Activo' AND moneda=?", (moneda,))
-        b = [x[0] for x in self.c.cursor.fetchall()]
-        self.banco_var.configure(values=b if b else ["Sin Cuentas"])
-        if b: self.banco_var.set(b[0])
-        if hasattr(self, 'lbl_fiat_unit'): self.lbl_fiat_unit.configure(text=moneda)
-    def cambio_tipo(self, val):
-        self.tipo_op = val
-        col = "#2cc985" if val == "Compra" else "#e3a319"
-        self.seg_tipo.configure(selected_color=col)
-        self.btn_ok.configure(fg_color=col, hover_color="#1ea86d" if val=="Compra" else "#c98d0e", text=f"GUARDAR {val.upper()} ({self.seg_moneda.get()})")
-        self.calc_neto_display()
-    def process_batch(self): pass 
-    def open_batch_modal(self, orders, total_fiat, moneda): pass
-    def save_batch_to_db(self, orders): pass
-    def fijar_comision(self): pass
+        except Exception as e:
+            self.c.show_error("Error Crítico", str(e))

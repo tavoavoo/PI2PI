@@ -23,7 +23,7 @@ class ReportesView(ctk.CTkFrame):
         # --- HEADER ---
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=20, pady=20)
-        ctk.CTkLabel(header, text="Reportes Contables", font=("Arial", 26, "bold")).pack(side="left")
+        ctk.CTkLabel(header, text="Reportes y Auditoría", font=("Arial", 26, "bold")).pack(side="left")
 
         # --- AREA DE TRABAJO ---
         main_frame = ctk.CTkFrame(self, fg_color="#1a1a1a", corner_radius=10)
@@ -33,16 +33,25 @@ class ReportesView(ctk.CTkFrame):
         ctk.CTkLabel(main_frame, text="GENERADOR DE REPORTE FISCAL (.xlsx)", font=("Arial", 16, "bold"), text_color="#3498db").pack(pady=(20, 5))
         
         info_text = (
-            "Este módulo procesa el historial crudo de Binance ('Statement') y lo cruza con tu Base de Datos.\n"
-            "1. DOS TABLAS DE RESUMEN: Operativo (USDT) y Financiero (PESOS).\n"
-            "2. ANEXO DE RETIROS: Separa gastos personales y moneda extranjera.\n"
-            "3. FORMATO LIMPIO: Sin notas al pie, solo datos."
+            "Motor Híbrido: Fusiona historial de Binance (CSV) con Operaciones Manuales (DB).\n"
+            "Detecta automáticamente: Stock remanente, Ganancia en USDT y Retiros Personales."
         )
         ctk.CTkLabel(main_frame, text=info_text, font=("Arial", 12), text_color="gray", justify="center").pack(pady=5)
 
-        # --- BOTONES DE CARGA ---
-        self.btn_load = ctk.CTkButton(main_frame, text="📂 CARGAR CSV BINANCE", width=250, height=40, font=("Arial", 12, "bold"), command=self.cargar_csv)
-        self.btn_load.pack(pady=15)
+        # --- CONTENEDOR DE BOTONES ---
+        btn_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        btn_frame.pack(pady=15)
+
+        # 1. Cargar CSV
+        self.btn_load = ctk.CTkButton(btn_frame, text="📂 CARGAR CSV BINANCE", width=200, height=40, 
+                                      font=("Arial", 12, "bold"), command=self.cargar_csv)
+        self.btn_load.pack(side="left", padx=10)
+
+        # 2. Carga Manual
+        self.btn_manual = ctk.CTkButton(btn_frame, text="➕ NUEVA OP. MANUAL", width=200, height=40, 
+                                        font=("Arial", 12, "bold"), fg_color="#8e44ad", hover_color="#732d91",
+                                        command=self.abrir_carga_manual) # Usamos la función dedicada
+        self.btn_manual.pack(side="left", padx=10)
 
         self.lbl_file = ctk.CTkLabel(main_frame, text="Ningún archivo seleccionado", font=("Consolas", 12), text_color="#e74c3c")
         self.lbl_file.pack(pady=5)
@@ -68,6 +77,15 @@ class ReportesView(ctk.CTkFrame):
         self.log_box = ctk.CTkTextbox(main_frame, width=600, height=150)
         self.log_box.pack(pady=20)
         self.log("Sistema listo. Esperando archivo...")
+
+    # --- MÉTODO FALTANTE QUE CAUSABA EL ERROR ---
+    def abrir_carga_manual(self):
+        try:
+            self.c.show_view("NuevaOperacionView")
+        except AttributeError:
+            print("Error: El controlador no tiene show_view. Intentando acceso directo.")
+            if hasattr(self.c, 'controller'):
+                self.c.controller.show_view("NuevaOperacionView")
 
     def log(self, text):
         self.log_box.insert("end", text + "\n")
@@ -119,18 +137,15 @@ class ReportesView(ctk.CTkFrame):
             mapa = {}
             for r in rows:
                 oid = str(r[0])
-                banco = r[1]
-                es_personal = True if r[2] == 1 else False
-                mapa[oid] = {'banco': banco, 'es_personal': es_personal}
-            self.log(f"✅ Base de Datos conectada. {len(mapa)} ops en memoria.")
+                if oid and oid != "None":
+                    banco = r[1]
+                    es_personal = True if r[2] == 1 else False
+                    mapa[oid] = {'banco': banco, 'es_personal': es_personal}
+            self.log(f"✅ Base de Datos conectada. {len(mapa)} ops mapeadas.")
             return mapa
         except Exception as e:
             self.log(f"⚠️ No se pudo leer la base de datos local: {e}")
             return {}
-
-    def _fmt_resumen(self, valor):
-        if not valor: return "0,00"
-        return f"{valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
 
     def procesar_datos(self):
         if not self.archivo_binance: return
@@ -157,7 +172,7 @@ class ReportesView(ctk.CTkFrame):
         if not save_path: return
 
         try:
-            self.log("⏳ Iniciando procesamiento...")
+            self.log("⏳ Iniciando procesamiento híbrido (CSV + Manuales)...")
             
             db_map = self.cargar_mapa_bancos_y_personal()
             fecha_cambio_comision = datetime(2025, 12, 29, 23, 59, 59)
@@ -165,10 +180,12 @@ class ReportesView(ctk.CTkFrame):
             data_por_dia = defaultdict(lambda: {"compras": [], "ventas": []})
             rangos_mensuales = defaultdict(lambda: {"c_usdt": [], "v_usdt": [], "c_ars": [], "v_ars": []})
             lista_personales = [] 
+            ids_procesados = set() 
             
             count_compras = 0; count_ventas = 0
-            count_skipped_currency = 0; count_skipped_date = 0; count_skipped_personal = 0
+            count_skipped_currency = 0; count_skipped_personal = 0
 
+            # --- FASE 1: LECTURA CSV (Binance) ---
             with open(self.archivo_binance, 'r', encoding='utf-8', errors='replace') as f_in:
                 sample = f_in.read(2048)
                 f_in.seek(0)
@@ -185,19 +202,15 @@ class ReportesView(ctk.CTkFrame):
                     order_type = row_clean.get('Order Type', '')
                     if order_type not in ['Buy', 'Sell']: continue 
 
-                    # 1. PARSEAR FECHA Y NUMEROS PRIMERO
                     fecha_str = row_clean.get('Created Time', '')
                     try: dt_obj = datetime.strptime(fecha_str, "%Y-%m-%d %H:%M:%S")
                     except ValueError: continue
 
                     dt_real = dt_obj - timedelta(hours=3)
-                    if filter_start and dt_real < filter_start:
-                        count_skipped_date += 1; continue
-                    if filter_end and dt_real > filter_end:
-                        count_skipped_date += 1; continue
+                    if filter_start and dt_real < filter_start: continue
+                    if filter_end and dt_real > filter_end: continue
 
                     fecha_solo_dia = dt_real.strftime("%d/%m/%Y")
-                    
                     price_unitario_binance = self.clean_decimal(row_clean.get('Price', '0'))
                     total_pesos = self.clean_decimal(row_clean.get('Total Price', '0'))
                     qty_bruta = self.clean_decimal(row_clean.get('Quantity', '0'))
@@ -206,6 +219,8 @@ class ReportesView(ctk.CTkFrame):
 
                     raw_id = row_clean.get('Order Number', '')
                     clean_id = self.clean_order_id(raw_id)
+                    ids_procesados.add(clean_id) 
+
                     counterparty = row_clean.get('Counterparty Nickname', 'N/A')
                     fiat_type = row_clean.get('Fiat Type', '').upper()
 
@@ -267,35 +282,88 @@ class ReportesView(ctk.CTkFrame):
                         data_por_dia[fecha_solo_dia]["ventas"].append(fila)
                         count_ventas += 1
 
+            # --- FASE 2: LECTURA DB (MANUALES) ---
+            self.log("🔍 Buscando operaciones manuales en DB...")
+            try:
+                self.c.cursor.execute("SELECT id, fecha, tipo, monto_ars, monto_usdt, cotizacion, es_personal, order_id, banco FROM operaciones")
+                all_ops_db = self.c.cursor.fetchall()
+                
+                count_manuales = 0
+                for op in all_ops_db:
+                    oid_db = str(op[7]) if op[7] else ""
+                    if oid_db in ids_procesados: continue
+                    
+                    fecha_db_str = op[1]
+                    try:
+                        if len(fecha_db_str) > 10: dt_db = datetime.strptime(fecha_db_str, "%Y-%m-%d %H:%M:%S")
+                        else: dt_db = datetime.strptime(fecha_db_str, "%Y-%m-%d")
+                    except: continue 
+                    
+                    if filter_start and dt_db < filter_start: continue
+                    if filter_end and dt_db > filter_end: continue
+                    
+                    fecha_solo_dia = dt_db.strftime("%d/%m/%Y")
+                    tipo = op[2] 
+                    fiat = float(op[3]) if op[3] else 0.0
+                    usdt = float(op[4]) if op[4] else 0.0
+                    cot = float(op[5]) if op[5] else 0.0
+                    es_p = True if op[6] == 1 else False
+                    banco = op[8] if op[8] else "Manual"
+                    
+                    ids_procesados.add(oid_db) 
+                    
+                    if es_p:
+                        # CLASIFICACIÓN SEMÁNTICA PARA MANUALES
+                        tipo_mov = "GASTO / RETIRO" 
+                        if tipo == "Venta" and usdt > 0: tipo_mov = "RETIRO STOCK (MANUAL)"
+                        if tipo == "Compra" and usdt == 0: tipo_mov = "GASTO PERSONAL (MANUAL)"
+                        if tipo == "Venta" and usdt == 0: tipo_mov = "INGRESO CAPITAL (MANUAL)"
+
+                        lista_personales.append({
+                            "fecha": fecha_solo_dia,
+                            "tipo": tipo_mov,
+                            "usdt": usdt,
+                            "monto_sumable": fiat
+                        })
+                        count_manuales += 1
+                        count_skipped_personal += 1
+                    else:
+                        row_data = [fecha_solo_dia, "USDT", usdt, cot, fiat, "MANUAL", banco]
+                        if tipo == "Compra":
+                            data_por_dia[fecha_solo_dia]["compras"].append(row_data)
+                            count_compras += 1
+                        elif tipo == "Venta":
+                            data_por_dia[fecha_solo_dia]["ventas"].append(row_data)
+                            count_ventas += 1
+                        count_manuales += 1
+
+                if count_manuales > 0: self.log(f"✅ Se integraron {count_manuales} operaciones MANUALES.")
+            
+            except Exception as e_db: self.log(f"⚠️ Error leyendo manuales: {e_db}")
+
             if count_skipped_currency > 0: self.log(f"💜 {count_skipped_currency} Ops Extranjeras al Anexo.")
             if count_skipped_personal > 0: self.log(f"💜 {count_skipped_personal} Ops Personales al Anexo.")
 
             # --- EXCEL ---
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Reporte Fiscal"
-
+            wb = Workbook(); ws = wb.active; ws.title = "Reporte Fiscal"
             font_title = Font(name='Arial', size=12, bold=True, color="FFFFFF")
             font_header = Font(name='Arial', size=10, bold=True)
             font_resumen = Font(name='Arial', size=10, bold=True)
+            font_note = Font(name='Arial', size=9, italic=True, color="555555")
             align_center = Alignment(horizontal='center', vertical='center')
             align_right = Alignment(horizontal='right', vertical='center')
-            
             fill_green = PatternFill(start_color="27ae60", end_color="27ae60", fill_type="solid")
             fill_red = PatternFill(start_color="c0392b", end_color="c0392b", fill_type="solid")
             fill_blue_light = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
             fill_blue_dark = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
             fill_purple_light = PatternFill(start_color="E8DAEF", end_color="E8DAEF", fill_type="solid")
-            fmt_number = '#,##0.00' 
-            fmt_accounting = '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'
+            fmt_number = '#,##0.00'; fmt_accounting = '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'
             
-            ws['A1'] = "COMPRA"; ws.merge_cells('A1:G1')
-            ws['A1'].font = font_title; ws['A1'].alignment = align_center; ws['A1'].fill = fill_green
-            ws['H1'] = "VENTA"; ws.merge_cells('H1:N1')
-            ws['H1'].font = font_title; ws['H1'].alignment = align_center; ws['H1'].fill = fill_red
+            ws['A1'] = "COMPRA"; ws.merge_cells('A1:G1'); ws['A1'].font = font_title; ws['A1'].alignment = align_center; ws['A1'].fill = fill_green
+            ws['H1'] = "VENTA"; ws.merge_cells('H1:N1'); ws['H1'].font = font_title; ws['H1'].alignment = align_center; ws['H1'].fill = fill_red
 
             headers = ["FECHA", "TIPO DE CRIPTO", "USDT COMPRADO", "PRECIO DE COMPRA", "MONTO EN $", "EXCHANGUE", "MEDIO DE PAGO", "FECHA", "TIPO DE CRIPTO", "USDT VENDIDO", "PRECIO DE VENTA", "MONTO EN $", "EXCHANGUE", "MEDIO DE PAGO"]
-            ws.append(headers)
+            ws.append(headers); 
             for cell in ws[2]: cell.font = font_header; cell.alignment = align_center
 
             # RENDER DIARIO
@@ -303,15 +371,11 @@ class ReportesView(ctk.CTkFrame):
             row_idx = 3
             
             for fecha in fechas_ordenadas:
-                bloque = data_por_dia[fecha]
-                compras_dia = bloque["compras"]
-                ventas_dia = bloque["ventas"]
-                
+                bloque = data_por_dia[fecha]; compras_dia = bloque["compras"]; ventas_dia = bloque["ventas"]
                 start_row = row_idx
                 rows_count = max(len(compras_dia), len(ventas_dia))
                 end_row = start_row + rows_count - 1
-                dt_obj = datetime.strptime(fecha, "%d/%m/%Y")
-                key_mes = dt_obj.strftime("%m/%Y")
+                dt_obj = datetime.strptime(fecha, "%d/%m/%Y"); key_mes = dt_obj.strftime("%m/%Y")
                 
                 if len(compras_dia) > 0:
                     rangos_mensuales[key_mes]["c_usdt"].append(f"C{start_row}:C{start_row + len(compras_dia) - 1}")
@@ -329,8 +393,7 @@ class ReportesView(ctk.CTkFrame):
                         ws.cell(row=row_idx, column=5, value=c_data[4]).number_format = fmt_accounting; ws.cell(row=row_idx, column=5).alignment = align_right
                         ws.cell(row=row_idx, column=6, value=c_data[5]).alignment = align_center
                         ws.cell(row=row_idx, column=7, value=c_data[6]).alignment = align_center
-                    else:
-                        ws.cell(row=row_idx, column=1, value=fecha).alignment = align_center
+                    else: ws.cell(row=row_idx, column=1, value=fecha).alignment = align_center
 
                     if v_data:
                         ws.cell(row=row_idx, column=8, value=v_data[0]).alignment = align_center
@@ -340,15 +403,13 @@ class ReportesView(ctk.CTkFrame):
                         ws.cell(row=row_idx, column=12, value=v_data[4]).number_format = fmt_accounting; ws.cell(row=row_idx, column=12).alignment = align_right
                         ws.cell(row=row_idx, column=13, value=v_data[5]).alignment = align_center
                         ws.cell(row=row_idx, column=14, value=v_data[6]).alignment = align_center
-                    else:
-                        ws.cell(row=row_idx, column=8, value=fecha).alignment = align_center
+                    else: ws.cell(row=row_idx, column=8, value=fecha).alignment = align_center
                     row_idx += 1
                 
                 # SEPARADOR VISUAL
                 cell_res = ws.cell(row=row_idx, column=1, value="")
                 ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=14)
-                cell_res.fill = fill_blue_light
-                row_idx += 1
+                cell_res.fill = fill_blue_light; row_idx += 1
 
             # --- TABLAS RESUMEN ---
             border_unified = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
@@ -357,11 +418,10 @@ class ReportesView(ctk.CTkFrame):
             def make_sum(r): return f"SUM({','.join(r)})" if r else "0"
             def sum_refs(r): return f"=SUM({','.join(r)})" if r else "=0"
 
-            # 1. RESUMEN USDT
+            # 1. USDT
             row_idx += 2
             ws.cell(row=row_idx, column=1, value="RESUMEN OPERATIVO (USDT)").font = Font(name='Arial', size=12, bold=True)
             row_idx += 1
-            
             headers_usdt = ["MES", "COMPRAS (USDT)", "VENTAS (USDT)", "STOCK (BALANCE)", "GANANCIA EST. (USDT)"]
             for i, h in enumerate(headers_usdt, 1):
                 cell = ws.cell(row=row_idx, column=i, value=h)
@@ -370,18 +430,13 @@ class ReportesView(ctk.CTkFrame):
             row_idx += 1
             
             total_c_usdt = []; total_v_usdt = []; total_g_usdt = []
-
             for mes in meses_ordenados:
                 rgs = rangos_mensuales[mes]
                 ws.cell(row=row_idx, column=1, value=mes).border = border_unified; ws.cell(row=row_idx, column=1).alignment = align_center
                 c_buy = ws.cell(row=row_idx, column=2, value="="+make_sum(rgs["c_usdt"])); c_buy.number_format=fmt_number; c_buy.border=border_unified; total_c_usdt.append(f"B{row_idx}")
                 c_sell = ws.cell(row=row_idx, column=3, value="="+make_sum(rgs["v_usdt"])); c_sell.number_format=fmt_number; c_sell.border=border_unified; total_v_usdt.append(f"C{row_idx}")
                 ws.cell(row=row_idx, column=4, value=f"=C{row_idx}-B{row_idx}").number_format=fmt_number; ws.cell(row=row_idx, column=4).border=border_unified
-                
-                sum_v_ars = make_sum(rgs["v_ars"])
-                sum_c_ars = make_sum(rgs["c_ars"])
-                sum_v_usdt = f"C{row_idx}" 
-                
+                sum_v_ars = make_sum(rgs["v_ars"]); sum_c_ars = make_sum(rgs["c_ars"]); sum_v_usdt = f"C{row_idx}" 
                 form_profit = f'=IF({sum_v_usdt}<>0, ({sum_v_ars}-{sum_c_ars})/({sum_v_ars}/{sum_v_usdt}), 0)'
                 c_prof = ws.cell(row=row_idx, column=5, value=form_profit); c_prof.number_format=fmt_number; c_prof.border=border_unified; total_g_usdt.append(f"E{row_idx}")
                 row_idx += 1
@@ -392,11 +447,10 @@ class ReportesView(ctk.CTkFrame):
             ws.cell(row=row_idx, column=4, value=f"=C{row_idx}-B{row_idx}").font=font_gd; ws.cell(row=row_idx, column=4).border=border_unified; ws.cell(row=row_idx, column=4).number_format=fmt_number
             ws.cell(row=row_idx, column=5, value=sum_refs(total_g_usdt)).font=font_gd; ws.cell(row=row_idx, column=5).border=border_unified; ws.cell(row=row_idx, column=5).number_format=fmt_number
 
-            # 2. RESUMEN ARS
+            # 2. ARS
             row_idx += 3
             ws.cell(row=row_idx, column=1, value="RESUMEN FINANCIERO (PESOS)").font = Font(name='Arial', size=12, bold=True)
             row_idx += 1
-            
             headers_ars = ["MES", "COMPRAS / GASTOS ($)", "VENTAS / INGRESOS ($)", "RESULTADO CAJA ($)"]
             for i, h in enumerate(headers_ars, 1):
                 cell = ws.cell(row=row_idx, column=i, value=h)
@@ -405,7 +459,6 @@ class ReportesView(ctk.CTkFrame):
             row_idx += 1
             
             total_c_ars = []; total_v_ars = []
-
             for mes in meses_ordenados:
                 rgs = rangos_mensuales[mes]
                 ws.cell(row=row_idx, column=1, value=mes).border = border_unified; ws.cell(row=row_idx, column=1).alignment = align_center
@@ -419,19 +472,16 @@ class ReportesView(ctk.CTkFrame):
             ws.cell(row=row_idx, column=3, value=sum_refs(total_v_ars)).font=font_gd; ws.cell(row=row_idx, column=3).border=border_unified; ws.cell(row=row_idx, column=3).number_format=fmt_accounting
             ws.cell(row=row_idx, column=4, value=f"=C{row_idx}-B{row_idx}").font=font_gd; ws.cell(row=row_idx, column=4).border=border_unified; ws.cell(row=row_idx, column=4).number_format=fmt_accounting
 
-            # --- ANEXO ---
+            # ANEXO
             if lista_personales:
                 row_idx += 3
                 ws.cell(row=row_idx, column=1, value="ANEXO: MOVIMIENTOS PERSONALES Y RETIROS").font = Font(name='Arial', size=12, bold=True)
                 row_idx += 1
-                
                 headers_p = ["FECHA", "TIPO", "USDT RETIRADO"]
                 for i, h in enumerate(headers_p, 1):
                     c = ws.cell(row=row_idx, column=i, value=h)
-                    c.fill = fill_purple_light; c.font = Font(name='Arial', size=10, bold=True)
-                    c.border = border_unified; c.alignment = align_center
+                    c.fill = fill_purple_light; c.font = Font(name='Arial', size=10, bold=True); c.border = border_unified; c.alignment = align_center
                 row_idx += 1
-                
                 start_p = row_idx
                 for item in lista_personales:
                     ws.cell(row=row_idx, column=1, value=item['fecha']).border = border_unified; ws.cell(row=row_idx, column=1).alignment = align_center
@@ -440,13 +490,11 @@ class ReportesView(ctk.CTkFrame):
                     ws.cell(row=row_idx, column=4, value=item['monto_sumable']) 
                     row_idx += 1
                 end_p = row_idx - 1
-                
                 ws.cell(row=row_idx, column=2, value="TOTAL:").font = font_gd; ws.cell(row=row_idx, column=2).alignment = align_right
                 ws.cell(row=row_idx, column=3, value=f"=SUM(C{start_p}:C{end_p})").font = font_gd; ws.cell(row=row_idx, column=3).number_format = fmt_number
-                ws.cell(row=row_idx, column=4, value=f"=SUM(D{start_p}:D{end_p})").number_format = fmt_accounting
-                ws.column_dimensions['D'].hidden = True 
+                ws.cell(row=row_idx, column=4, value=f"=SUM(D{start_p}:D{end_p})").number_format = fmt_accounting; ws.column_dimensions['D'].hidden = True 
 
-            # AJUSTE ANCHO
+            # Ancho columnas
             for i, col in enumerate(ws.columns, 1):
                 col_letter = get_column_letter(i)
                 if i in [1, 8]: ws.column_dimensions[col_letter].width = 15; continue
@@ -454,7 +502,6 @@ class ReportesView(ctk.CTkFrame):
                 if i in [7, 14]: ws.column_dimensions[col_letter].width = 20; continue
                 if row_idx > 10 and i in [4, 5, 7, 8]: ws.column_dimensions[col_letter].width = 24; continue 
                 if lista_personales and i == 2: ws.column_dimensions[col_letter].width = 30; continue 
-
                 max_len = 0
                 for cell in col:
                     try:
@@ -467,7 +514,6 @@ class ReportesView(ctk.CTkFrame):
                 ws.column_dimensions[col_letter].width = final_w
 
             wb.save(save_path)
-
             self.log(f"✅ ¡Éxito! Reporte ARS Final.")
             msg_p = f"\nSe listaron {len(lista_personales)} mov. personales en el Anexo." if lista_personales else ""
             self.c.show_info("Listo", f"Reporte generado.{msg_p}")

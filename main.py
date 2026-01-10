@@ -35,6 +35,7 @@ from views.dashboard import DashboardView
 from views.history import HistorialView
 from views.treasury import TesoreriaView
 from views.reports import ReportesView
+from views.new_op import NuevaOperacionView
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -95,7 +96,8 @@ class P2PManagerApp(ctk.CTk):
         self.main_container.grid_columnconfigure(0, weight=1)
         
         self.frames = {}
-        for F in (DashboardView, TesoreriaView, HistorialView, ReportesView): 
+        # Agregamos NuevaOperacionView al final de la lista
+        for F in (DashboardView, TesoreriaView, HistorialView, ReportesView, NuevaOperacionView):
             page_name = F.__name__
             frame = F(parent=self.main_container, controller=self)
             self.frames[page_name] = frame
@@ -417,7 +419,13 @@ class P2PManagerApp(ctk.CTk):
 
         except Exception as e:
             self.show_error("Error", str(e))
-
+    def show_view(self, view_name):
+            """Muestra la vista solicitada y oculta las demás."""
+            view = self.frames.get(view_name)
+            if view:
+                view.tkraise()
+            else:
+                print(f"Error: La vista {view_name} no existe.")
     def refresh_all_views(self):
         for f in self.frames.values():
             if hasattr(f, 'update_view'): f.update_view()
@@ -440,7 +448,17 @@ class P2PManagerApp(ctk.CTk):
     def show_info(self, t, m): CustomDialog(self, t, m, "info")
     def show_error(self, t, m): CustomDialog(self, t, m, "error")
     def ask_confirm(self, t, m, cb): CustomDialog(self, t, m, "confirm", cb)
-
+    
+    def show_view(self, view_name):
+        """Muestra una vista específica sin pasar por el menú lateral."""
+        view = self.frames.get(view_name)
+        if view:
+            view.tkraise()
+            # Si la vista necesita actualizarse al abrir, lo hacemos
+            if hasattr(view, 'update_view'):
+                view.update_view()
+        else:
+            print(f"Error: La vista {view_name} no existe en self.frames")
 if __name__ == "__main__":
     app = P2PManagerApp()
     app.mainloop()
