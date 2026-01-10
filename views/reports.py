@@ -50,7 +50,7 @@ class ReportesView(ctk.CTkFrame):
         # 2. Carga Manual
         self.btn_manual = ctk.CTkButton(btn_frame, text="➕ NUEVA OP. MANUAL", width=200, height=40, 
                                         font=("Arial", 12, "bold"), fg_color="#8e44ad", hover_color="#732d91",
-                                        command=self.abrir_carga_manual) # Usamos la función dedicada
+                                        command=self.abrir_carga_manual) 
         self.btn_manual.pack(side="left", padx=10)
 
         self.lbl_file = ctk.CTkLabel(main_frame, text="Ningún archivo seleccionado", font=("Consolas", 12), text_color="#e74c3c")
@@ -78,7 +78,6 @@ class ReportesView(ctk.CTkFrame):
         self.log_box.pack(pady=20)
         self.log("Sistema listo. Esperando archivo...")
 
-    # --- MÉTODO FALTANTE QUE CAUSABA EL ERROR ---
     def abrir_carga_manual(self):
         try:
             self.c.show_view("NuevaOperacionView")
@@ -472,27 +471,35 @@ class ReportesView(ctk.CTkFrame):
             ws.cell(row=row_idx, column=3, value=sum_refs(total_v_ars)).font=font_gd; ws.cell(row=row_idx, column=3).border=border_unified; ws.cell(row=row_idx, column=3).number_format=fmt_accounting
             ws.cell(row=row_idx, column=4, value=f"=C{row_idx}-B{row_idx}").font=font_gd; ws.cell(row=row_idx, column=4).border=border_unified; ws.cell(row=row_idx, column=4).number_format=fmt_accounting
 
-            # ANEXO
+            # ANEXO (CORREGIDO PARA MOSTRAR ARS VISIBLE)
             if lista_personales:
                 row_idx += 3
                 ws.cell(row=row_idx, column=1, value="ANEXO: MOVIMIENTOS PERSONALES Y RETIROS").font = Font(name='Arial', size=12, bold=True)
                 row_idx += 1
-                headers_p = ["FECHA", "TIPO", "USDT RETIRADO"]
+                
+                # --- CABECERAS NUEVAS ---
+                headers_p = ["FECHA", "TIPO", "USDT", "MONTO ($)"]
                 for i, h in enumerate(headers_p, 1):
                     c = ws.cell(row=row_idx, column=i, value=h)
                     c.fill = fill_purple_light; c.font = Font(name='Arial', size=10, bold=True); c.border = border_unified; c.alignment = align_center
                 row_idx += 1
+                
                 start_p = row_idx
                 for item in lista_personales:
                     ws.cell(row=row_idx, column=1, value=item['fecha']).border = border_unified; ws.cell(row=row_idx, column=1).alignment = align_center
                     ws.cell(row=row_idx, column=2, value=item['tipo']).border = border_unified; ws.cell(row=row_idx, column=2).alignment = align_center
                     ws.cell(row=row_idx, column=3, value=item['usdt']).border = border_unified; ws.cell(row=row_idx, column=3).number_format = fmt_number; ws.cell(row=row_idx, column=3).alignment = align_right
-                    ws.cell(row=row_idx, column=4, value=item['monto_sumable']) 
+                    
+                    # --- COLUMNA 4 VISIBLE ---
+                    ws.cell(row=row_idx, column=4, value=item['monto_sumable']).border = border_unified; ws.cell(row=row_idx, column=4).number_format = fmt_accounting
+                    
                     row_idx += 1
                 end_p = row_idx - 1
+                
+                # Totales
                 ws.cell(row=row_idx, column=2, value="TOTAL:").font = font_gd; ws.cell(row=row_idx, column=2).alignment = align_right
                 ws.cell(row=row_idx, column=3, value=f"=SUM(C{start_p}:C{end_p})").font = font_gd; ws.cell(row=row_idx, column=3).number_format = fmt_number
-                ws.cell(row=row_idx, column=4, value=f"=SUM(D{start_p}:D{end_p})").number_format = fmt_accounting; ws.column_dimensions['D'].hidden = True 
+                ws.cell(row=row_idx, column=4, value=f"=SUM(D{start_p}:D{end_p})").font = font_gd; ws.cell(row=row_idx, column=4).number_format = fmt_accounting 
 
             # Ancho columnas
             for i, col in enumerate(ws.columns, 1):
@@ -501,6 +508,10 @@ class ReportesView(ctk.CTkFrame):
                 if i in [4, 5, 11, 12]: ws.column_dimensions[col_letter].width = 22; continue
                 if i in [7, 14]: ws.column_dimensions[col_letter].width = 20; continue
                 if row_idx > 10 and i in [4, 5, 7, 8]: ws.column_dimensions[col_letter].width = 24; continue 
+                
+                # Ancho para Anexo Monto
+                if lista_personales and i == 4: ws.column_dimensions[col_letter].width = 22; continue
+                
                 if lista_personales and i == 2: ws.column_dimensions[col_letter].width = 30; continue 
                 max_len = 0
                 for cell in col:
