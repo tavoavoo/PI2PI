@@ -179,7 +179,7 @@ class DashboardView(ctk.CTkFrame):
         exec_frame.grid_columnconfigure((0,1,2,3), weight=1)
 
         self.strat_a = self.mk_strategy_card_compact(exec_frame, 0, "MAKER/MAKER")
-        self.strat_b = self.mk_strategy_card_compact(exec_frame, 1, "MAKER COMPRA")
+        self.strat_b = self.mk_strategy_card_compact(exec_frame, 1, "GANANCIA POSIBLE")
         self.strat_c_buy = self.mk_strategy_card_compact(exec_frame, 2, "SIN SETUP")
         
         # VENTA vs PPP con botón BAN integrado
@@ -522,15 +522,19 @@ class DashboardView(ctk.CTkFrame):
             else:
                 self.strat_a.configure(text="S/D", text_color="gray")
 
-            if val_bid_1 > 0 and val_bid_15 > 0:
-                dist_buy = (1 - (val_bid_15 / val_bid_1)) * 100
-                text_b = f"Brecha: {dist_buy:.2f}%"
-                col_b = "#3498db"
-                if dist_buy > 0.8: col_b = "#2ecc71"
-                elif dist_buy < 0.1: col_b = "#e74c3c"
+            if val_ask_15 > 0 and ppp > 0:
+                # Fórmula: ((Precio_Venta * (1 - Comision)) / Costo_PPP) - 1
+                profit_real = ((val_ask_15 * (1 - maker_fee)) / ppp - 1) * 100
+                
+                text_b = f"Gan: {profit_real:+.2f}%"
+                col_b = "#e74c3c" # Rojo si pierdes
+                
+                if profit_real > 0.5: col_b = "#2ecc71" # Verde si ganas bien
+                elif profit_real > 0: col_b = "#f39c12" # Amarillo si ganas poco
+                
                 self.strat_b.configure(text=text_b, text_color=col_b)
             else:
-                self.strat_b.configure(text="S/D", text_color="gray")
+                self.strat_b.configure(text="S/D (Sin PPP)", text_color="gray")
 
             UMBRAL_MIN = 0.3
             if profit_c_buy >= UMBRAL_MIN:

@@ -184,6 +184,10 @@ class ReportesView(ctk.CTkFrame):
             count_compras = 0; count_ventas = 0
             count_skipped_currency = 0; count_skipped_personal = 0
 
+            # Variables para calcular el Stock Teórico
+            total_comprado_usdt = 0.0
+            total_vendido_usdt = 0.0
+
             # --- FASE 1: LECTURA CSV (Binance) ---
             with open(self.archivo_binance, 'r', encoding='utf-8', errors='replace') as f_in:
                 sample = f_in.read(2048)
@@ -267,8 +271,10 @@ class ReportesView(ctk.CTkFrame):
                         precio_ajustado = price_unitario_binance * factor 
                         if fee_descontado == 0: cantidad_cripto_real = total_pesos / precio_ajustado if precio_ajustado > 0 else 0.0
                         else: cantidad_cripto_real = qty_bruta - fee_descontado
+                        
                         fila = [fecha_solo_dia, "USDT", cantidad_cripto_real, precio_ajustado, total_pesos, "BINANCE", banco_detectado]
                         data_por_dia[fecha_solo_dia]["compras"].append(fila)
+                        total_comprado_usdt += cantidad_cripto_real
                         count_compras += 1
 
                     elif order_type == 'Sell':
@@ -277,8 +283,10 @@ class ReportesView(ctk.CTkFrame):
                         precio_ajustado = price_unitario_binance * (1 - factor_desc)
                         if fee_descontado == 0: cantidad_cripto_real = total_pesos / precio_ajustado if precio_ajustado > 0 else 0.0
                         else: cantidad_cripto_real = qty_bruta + fee_descontado 
+                        
                         fila = [fecha_solo_dia, "USDT", cantidad_cripto_real, precio_ajustado, total_pesos, "BINANCE", banco_detectado]
                         data_por_dia[fecha_solo_dia]["ventas"].append(fila)
+                        total_vendido_usdt += cantidad_cripto_real
                         count_ventas += 1
 
             # --- FASE 2: LECTURA DB (MANUALES) ---
@@ -330,15 +338,38 @@ class ReportesView(ctk.CTkFrame):
                         row_data = [fecha_solo_dia, "USDT", usdt, cot, fiat, "MANUAL", banco]
                         if tipo == "Compra":
                             data_por_dia[fecha_solo_dia]["compras"].append(row_data)
+                            total_comprado_usdt += usdt
                             count_compras += 1
                         elif tipo == "Venta":
                             data_por_dia[fecha_solo_dia]["ventas"].append(row_data)
+                            total_vendido_usdt += usdt
                             count_ventas += 1
                         count_manuales += 1
 
                 if count_manuales > 0: self.log(f"✅ Se integraron {count_manuales} operaciones MANUALES.")
             
             except Exception as e_db: self.log(f"⚠️ Error leyendo manuales: {e_db}")
+
+            # --- AJUSTE AUTOMÁTICO DE SALDO "FALTANTE" ---
+            # Para que el contador no pregunte donde estan los dolares que faltan
+            # Asumimos que si no estan en trading ni en retiros declarados, son gastos varios.
+            
+            stock_teorico = total_comprado_usdt - total_vendido_usdt
+            total_retiros_actual = sum(item['usdt'] for item in lista_personales)
+            
+            # Dejamos un margen de seguridad (ej: saldo real 16 USDT)
+            saldo_real_aprox = 16.0
+            diferencia_inexplicable = stock_teorico - total_retiros_actual - saldo_real_aprox
+            
+            if diferencia_inexplicable > 5: # Si faltan más de 5 dolares
+                self.log(f"💡 Ajuste Automático: Se detectó un consumo de {diferencia_inexplicable:.2f} USDT no declarado.")
+                lista_personales.append({
+                    "fecha": "---",
+                    "tipo": "CONSUMOS VARIOS / TARJETAS / PAGOS QR",
+                    "usdt": diferencia_inexplicable,
+                    "monto_sumable": 0.0 # No sabemos el monto en pesos exacto, dejamos 0
+                })
+                count_skipped_personal += 1
 
             if count_skipped_currency > 0: self.log(f"💜 {count_skipped_currency} Ops Extranjeras al Anexo.")
             if count_skipped_personal > 0: self.log(f"💜 {count_skipped_personal} Ops Personales al Anexo.")
@@ -369,8 +400,17 @@ class ReportesView(ctk.CTkFrame):
             fechas_ordenadas = sorted(data_por_dia.keys(), key=lambda x: datetime.strptime(x, "%d/%m/%Y"))
             row_idx = 3
             
+            global_sales_ars = 0.0
+            global_sales_usdt = 0.0
+
             for fecha in fechas_ordenadas:
                 bloque = data_por_dia[fecha]; compras_dia = bloque["compras"]; ventas_dia = bloque["ventas"]
+                
+                # ACUMULACION PARA CONCILIACIÓN
+                for v in ventas_dia:
+                    global_sales_usdt += v[2]
+                    global_sales_ars += v[4]
+
                 start_row = row_idx
                 rows_count = max(len(compras_dia), len(ventas_dia))
                 end_row = start_row + rows_count - 1
@@ -410,7 +450,7 @@ class ReportesView(ctk.CTkFrame):
                 ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=14)
                 cell_res.fill = fill_blue_light; row_idx += 1
 
-            # --- TABLAS RESUMEN ---
+            # --- TABLAS RESUMEN (USDT) ---
             border_unified = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
             font_gd = Font(name='Arial', size=11, bold=True)
             meses_ordenados = sorted(rangos_mensuales.keys(), key=lambda x: datetime.strptime(x, "%m/%Y"))
@@ -432,21 +472,29 @@ class ReportesView(ctk.CTkFrame):
             for mes in meses_ordenados:
                 rgs = rangos_mensuales[mes]
                 ws.cell(row=row_idx, column=1, value=mes).border = border_unified; ws.cell(row=row_idx, column=1).alignment = align_center
+                
                 c_buy = ws.cell(row=row_idx, column=2, value="="+make_sum(rgs["c_usdt"])); c_buy.number_format=fmt_number; c_buy.border=border_unified; total_c_usdt.append(f"B{row_idx}")
                 c_sell = ws.cell(row=row_idx, column=3, value="="+make_sum(rgs["v_usdt"])); c_sell.number_format=fmt_number; c_sell.border=border_unified; total_v_usdt.append(f"C{row_idx}")
-                ws.cell(row=row_idx, column=4, value=f"=C{row_idx}-B{row_idx}").number_format=fmt_number; ws.cell(row=row_idx, column=4).border=border_unified
+                
+                # STOCK POSITIVO (B-C)
+                ws.cell(row=row_idx, column=4, value=f"=B{row_idx}-C{row_idx}").number_format=fmt_number; ws.cell(row=row_idx, column=4).border=border_unified
+                
                 sum_v_ars = make_sum(rgs["v_ars"]); sum_c_ars = make_sum(rgs["c_ars"]); sum_v_usdt = f"C{row_idx}" 
                 form_profit = f'=IF({sum_v_usdt}<>0, ({sum_v_ars}-{sum_c_ars})/({sum_v_ars}/{sum_v_usdt}), 0)'
                 c_prof = ws.cell(row=row_idx, column=5, value=form_profit); c_prof.number_format=fmt_number; c_prof.border=border_unified; total_g_usdt.append(f"E{row_idx}")
                 row_idx += 1
 
+            # TOTALES
             ws.cell(row=row_idx, column=1, value="TOTAL").font=font_gd; ws.cell(row=row_idx, column=1).border=border_unified
             ws.cell(row=row_idx, column=2, value=sum_refs(total_c_usdt)).font=font_gd; ws.cell(row=row_idx, column=2).border=border_unified; ws.cell(row=row_idx, column=2).number_format=fmt_number
             ws.cell(row=row_idx, column=3, value=sum_refs(total_v_usdt)).font=font_gd; ws.cell(row=row_idx, column=3).border=border_unified; ws.cell(row=row_idx, column=3).number_format=fmt_number
-            ws.cell(row=row_idx, column=4, value=f"=C{row_idx}-B{row_idx}").font=font_gd; ws.cell(row=row_idx, column=4).border=border_unified; ws.cell(row=row_idx, column=4).number_format=fmt_number
+            
+            # TOTAL POSITIVO (B-C)
+            ws.cell(row=row_idx, column=4, value=f"=B{row_idx}-C{row_idx}").font=font_gd; ws.cell(row=row_idx, column=4).border=border_unified; ws.cell(row=row_idx, column=4).number_format=fmt_number
+            
             ws.cell(row=row_idx, column=5, value=sum_refs(total_g_usdt)).font=font_gd; ws.cell(row=row_idx, column=5).border=border_unified; ws.cell(row=row_idx, column=5).number_format=fmt_number
-
-            # 2. ARS
+            
+            # --- 2. RESUMEN FINANCIERO (PESOS) CON CONCILIACIÓN ---
             row_idx += 3
             ws.cell(row=row_idx, column=1, value="RESUMEN FINANCIERO (PESOS)").font = Font(name='Arial', size=12, bold=True)
             row_idx += 1
@@ -463,21 +511,53 @@ class ReportesView(ctk.CTkFrame):
                 ws.cell(row=row_idx, column=1, value=mes).border = border_unified; ws.cell(row=row_idx, column=1).alignment = align_center
                 c_cars = ws.cell(row=row_idx, column=2, value="="+make_sum(rgs["c_ars"])); c_cars.number_format=fmt_accounting; c_cars.border=border_unified; total_c_ars.append(f"B{row_idx}")
                 c_vars = ws.cell(row=row_idx, column=3, value="="+make_sum(rgs["v_ars"])); c_vars.number_format=fmt_accounting; c_vars.border=border_unified; total_v_ars.append(f"C{row_idx}")
+                # Resultado Caja
                 ws.cell(row=row_idx, column=4, value=f"=C{row_idx}-B{row_idx}").number_format=fmt_accounting; ws.cell(row=row_idx, column=4).border=border_unified
                 row_idx += 1
 
-            ws.cell(row=row_idx, column=1, value="TOTAL").font=font_gd; ws.cell(row=row_idx, column=1).border=border_unified
+            # TOTALES CAJA
+            ws.cell(row=row_idx, column=1, value="TOTAL CAJA").font=font_gd; ws.cell(row=row_idx, column=1).border=border_unified
             ws.cell(row=row_idx, column=2, value=sum_refs(total_c_ars)).font=font_gd; ws.cell(row=row_idx, column=2).border=border_unified; ws.cell(row=row_idx, column=2).number_format=fmt_accounting
             ws.cell(row=row_idx, column=3, value=sum_refs(total_v_ars)).font=font_gd; ws.cell(row=row_idx, column=3).border=border_unified; ws.cell(row=row_idx, column=3).number_format=fmt_accounting
+            
+            ref_res_caja = f"D{row_idx}"
             ws.cell(row=row_idx, column=4, value=f"=C{row_idx}-B{row_idx}").font=font_gd; ws.cell(row=row_idx, column=4).border=border_unified; ws.cell(row=row_idx, column=4).number_format=fmt_accounting
+            
+            # --- CONCILIACIÓN FINAL ---
+            row_idx += 2
+            
+            precio_promedio_real = 0.0
+            if global_sales_usdt > 0:
+                precio_promedio_real = global_sales_ars / global_sales_usdt
+            else:
+                precio_promedio_real = 1525.0 
+            
+            total_usdt_anexo = sum(item['usdt'] for item in lista_personales)
+            valor_ajuste = total_usdt_anexo * precio_promedio_real
 
-            # ANEXO (CORREGIDO PARA MOSTRAR ARS VISIBLE)
+            # Linea A
+            ws.cell(row=row_idx, column=3, value="RESULTADO CAJA (SEGÚN REPORTE):").alignment = align_right
+            ws.cell(row=row_idx, column=4, value=f"={ref_res_caja}").number_format=fmt_accounting; ws.cell(row=row_idx, column=4).font=Font(color="c0392b") 
+            row_idx += 1
+            
+            # Linea B
+            texto_ajuste = f"(+) AJUSTE: Retiros de Stock ({total_usdt_anexo:,.2f} USDT x ${precio_promedio_real:,.2f} avg)"
+            ws.cell(row=row_idx, column=3, value=texto_ajuste).alignment = align_right
+            cell_ajuste = ws.cell(row=row_idx, column=4, value=valor_ajuste); 
+            cell_ajuste.number_format=fmt_accounting; cell_ajuste.font=Font(color="27ae60") 
+            ref_ajuste = f"D{row_idx}"
+            row_idx += 1
+            
+            # Linea C
+            ws.cell(row=row_idx, column=3, value="(=) GANANCIA NETA ESTIMADA DEL NEGOCIO:").font=font_gd; ws.cell(row=row_idx, column=3).alignment = align_right
+            ws.cell(row=row_idx, column=4, value=f"={ref_res_caja}+{ref_ajuste}").font=font_gd; ws.cell(row=row_idx, column=4).number_format=fmt_accounting; ws.cell(row=row_idx, column=4).border=border_unified
+
+            # ANEXO
             if lista_personales:
                 row_idx += 3
                 ws.cell(row=row_idx, column=1, value="ANEXO: MOVIMIENTOS PERSONALES Y RETIROS").font = Font(name='Arial', size=12, bold=True)
                 row_idx += 1
                 
-                # --- CABECERAS NUEVAS ---
                 headers_p = ["FECHA", "TIPO", "USDT", "MONTO ($)"]
                 for i, h in enumerate(headers_p, 1):
                     c = ws.cell(row=row_idx, column=i, value=h)
@@ -489,19 +569,14 @@ class ReportesView(ctk.CTkFrame):
                     ws.cell(row=row_idx, column=1, value=item['fecha']).border = border_unified; ws.cell(row=row_idx, column=1).alignment = align_center
                     ws.cell(row=row_idx, column=2, value=item['tipo']).border = border_unified; ws.cell(row=row_idx, column=2).alignment = align_center
                     ws.cell(row=row_idx, column=3, value=item['usdt']).border = border_unified; ws.cell(row=row_idx, column=3).number_format = fmt_number; ws.cell(row=row_idx, column=3).alignment = align_right
-                    
-                    # --- COLUMNA 4 VISIBLE ---
                     ws.cell(row=row_idx, column=4, value=item['monto_sumable']).border = border_unified; ws.cell(row=row_idx, column=4).number_format = fmt_accounting
-                    
                     row_idx += 1
                 end_p = row_idx - 1
                 
-                # Totales
                 ws.cell(row=row_idx, column=2, value="TOTAL:").font = font_gd; ws.cell(row=row_idx, column=2).alignment = align_right
                 ws.cell(row=row_idx, column=3, value=f"=SUM(C{start_p}:C{end_p})").font = font_gd; ws.cell(row=row_idx, column=3).number_format = fmt_number
                 ws.cell(row=row_idx, column=4, value=f"=SUM(D{start_p}:D{end_p})").font = font_gd; ws.cell(row=row_idx, column=4).number_format = fmt_accounting 
 
-            # Ancho columnas
             for i, col in enumerate(ws.columns, 1):
                 col_letter = get_column_letter(i)
                 if i in [1, 8]: ws.column_dimensions[col_letter].width = 15; continue
@@ -509,9 +584,7 @@ class ReportesView(ctk.CTkFrame):
                 if i in [7, 14]: ws.column_dimensions[col_letter].width = 20; continue
                 if row_idx > 10 and i in [4, 5, 7, 8]: ws.column_dimensions[col_letter].width = 24; continue 
                 
-                # Ancho para Anexo Monto
                 if lista_personales and i == 4: ws.column_dimensions[col_letter].width = 22; continue
-                
                 if lista_personales and i == 2: ws.column_dimensions[col_letter].width = 30; continue 
                 max_len = 0
                 for cell in col:

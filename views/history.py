@@ -243,7 +243,11 @@ class HistorialView(ctk.CTkFrame):
             if tipo_op == "Compra": self.c.cursor.execute("UPDATE cuentas SET saldo = saldo - ? WHERE nombre=?", (monto_fiat, banco_seleccionado))
             else: self.c.cursor.execute("UPDATE cuentas SET saldo = saldo + ? WHERE nombre=?", (monto_fiat, banco_seleccionado))
             self.c.conn.commit(); self.c.refresh_all_views(); self.renderizar_pagina()
-            self.c.show_info("Clasificado", f"Operación asignada a {banco_seleccionado}.")
+            
+            # --- MODIFICACIÓN: NO MOSTRAR POPUP BLOQUEANTE ---
+            # En lugar de popup, mostramos mensaje sutil en el status bar del fondo
+            self.lbl_status.configure(text=f"✅ Operación asignada a {banco_seleccionado}", text_color="#2ecc71")
+            
         except Exception as e: self.c.show_error("Error", str(e))
 
     def sync_binance_api(self):

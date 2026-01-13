@@ -159,10 +159,30 @@ class P2PManagerApp(ctk.CTk):
 
     def obtener_saldo_total_ars(self):
         try:
-            self.cursor.execute("SELECT SUM(saldo) FROM cuentas WHERE moneda='ARS'")
-            total = self.cursor.fetchone()[0]
-            return total if total else 0.0
-        except: return 0.0
+            # Traemos saldo y fecha de bloqueo de cuentas activas
+            self.cursor.execute("SELECT saldo, bloqueado_hasta FROM cuentas WHERE moneda='ARS' AND estado='Activo'")
+            cuentas = self.cursor.fetchall()
+            
+            total_disponible = 0.0
+            ahora = datetime.now()
+            
+            for saldo, bloqueado_hasta in cuentas:
+                # Lógica idéntica a Tesorería: Si tiene fecha futura, es saldo "fantasma"
+                esta_bloqueada = False
+                if bloqueado_hasta:
+                    try:
+                        dt_block = datetime.strptime(bloqueado_hasta, "%Y-%m-%d %H:%M:%S")
+                        if dt_block > ahora:
+                            esta_bloqueada = True
+                    except: pass
+                
+                if not esta_bloqueada:
+                    total_disponible += saldo
+            
+            return total_disponible
+        except Exception as e:
+            print(f"Error calc saldo: {e}")
+            return 0.0
 
     def obtener_ppp(self, moneda):
         try:
