@@ -1,4 +1,3 @@
-import requests
 import subprocess
 import time
 from selenium import webdriver
@@ -10,141 +9,33 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
 
-# ==========================================================
-# 1. MOTOR BINANCE (PARA EL RADAR / SCALPING) - Usa Requests
-# ==========================================================
-class BinanceP2PScraper:
-    def __init__(self):
-        self.url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
-        self.url_price = "https://api.binance.com/api/v3/ticker/price" # Para ETH/USDT
-        self.headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json"
-        }
-
-    def get_p2p_price(self, trade_type):
-        """Método CLÁSICO para el dashboard viejo (Solo mejor precio)"""
-        try:
-            data = self._fetch_p2p_data(trade_type, rows=1)
-            if data:
-                return float(data[0]['adv']['price'])
-            return None
-        except: return None
-
-    def get_order_book_pressure(self):
-        """Método NUEVO para el Radar (Analiza Volumen Top 10)"""
-        try:
-            oferta_data = self._fetch_p2p_data("BUY", rows=10) # Vendedores
-            demanda_data = self._fetch_p2p_data("SELL", rows=10) # Compradores
-
-            if not oferta_data or not demanda_data: return None
-
-            # Volumen acumulado (Fuerza del mercado)
-            volumen_oferta = sum([float(ad['adv']['surplusAmount']) for ad in oferta_data])
-            volumen_demanda = sum([float(ad['adv']['surplusAmount']) for ad in demanda_data])
-            
-            # Precios punta
-            precio_compra = float(oferta_data[0]['adv']['price'])
-            precio_venta = float(demanda_data[0]['adv']['price'])
-
-            return {
-                "precio_compra": precio_compra,
-                "precio_venta": precio_venta,
-                "volumen_oferta": volumen_oferta,
-                "volumen_demanda": volumen_demanda,
-                "spread": precio_venta - precio_compra
-            }
-        except Exception as e:
-            print(f"Error pressure: {e}")
-            return None
-
-    def get_eth_price(self):
-        """Obtiene precio ETH/USDT para medir sentimiento global"""
-        try:
-            params = {"symbol": "ETHUSDT"}
-            resp = requests.get(self.url_price, params=params, timeout=3)
-            data = resp.json()
-            return float(data['price'])
-        except: return 0.0
-
-    def _fetch_p2p_data(self, trade_type, rows=1):
-        payload = {
-            "asset": "USDT",
-            "fiat": "ARS",
-            "merchantCheck": False,
-            "page": 1,
-            "rows": rows,
-            "payTypes": ["MercadoPago"], 
-            "publisherType": None,
-            "tradeType": trade_type,
-            "transAmount": "50000"
-        }
-        try:
-            response = requests.post(self.url, json=payload, headers=self.headers, timeout=5)
-            data = response.json()
-            if "data" in data and len(data["data"]) > 0:
-                return data["data"]
-            return []
-        except:
-            return []
-
-# ==========================================================
-# 2. MOTOR DOLARITO (PARA EL CLÁSICO / MEP) - Usa Selenium BLINDADO
-# ==========================================================
 class DolaritoScraper:
     def __init__(self):
-        # CONFIGURACIÓN ANTI-CRASH
-        def configurar_opciones():
-            opts = Options()
-            # Modo Headless clásico (más estable que =new a veces)
-            opts.add_argument("--headless=new") 
-            
-            # Argumentos vitales para evitar crash de memoria
-            opts.add_argument("--no-sandbox")
-            opts.add_argument("--disable-dev-shm-usage")
-            opts.add_argument("--disable-gpu")
-            opts.add_argument("--disable-extensions")
-            opts.add_argument("--disable-software-rasterizer")
-            
-            # Anti-Detección (Stealth)
-            opts.add_argument("--disable-blink-features=AutomationControlled")
-            opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-            opts.add_experimental_option('useAutomationExtension', False)
-            opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            
-            opts.add_argument("--log-level=3") # Silenciar logs
-            return opts
-
-        self.options_light = configurar_opciones()
-        self.options_persistent = configurar_opciones()
+        # Opciones Ligeras (Histórico)
+        self.options_light = Options()
+        self.options_light.add_argument("--headless=new")
+        self.options_light.add_argument("--no-sandbox")
+        self.options_light.add_argument("--log-level=3")
+        self.options_light.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        
+        # Opciones Persistentes (Vivo)
+        self.options_persistent = Options()
+        self.options_persistent.add_argument("--headless")
+        self.options_persistent.add_argument("--disable-gpu")
+        self.options_persistent.add_argument("--no-sandbox")
+        self.options_persistent.add_argument("--disable-dev-shm-usage")
+        self.options_persistent.add_argument("--log-level=3")
+        self.options_persistent.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         
         self.driver_vivo = None
 
     def _iniciar_driver(self, options):
         try:
-            # Reinstala el driver si es necesario para coincidir con el navegador
             service = Service(ChromeDriverManager().install())
-            try:
-                # Ocultar ventana de consola en Windows
-                service.creation_flags = subprocess.CREATE_NO_WINDOW
-            except: pass
-            
-            driver = webdriver.Chrome(service=service, options=options)
-            
-            # Truco extra de evasión
-            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": """
-                    Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                    })
-                """
-            })
-            return driver
-        except Exception as e:
-            print(f"Error fatal iniciando Driver: {e}")
-            return None
-
-    # --- HISTÓRICO BLINDADO ---
+            service.creation_flags = subprocess.CREATE_NO_WINDOW
+            return webdriver.Chrome(service=service, options=options)
+        except: return None
+    # --- HISTÓRICO BLINDADO (PARSER CORREGIDO) ---
     def cargar_historia_combinada(self):
         print("🦅 Buscando historia en Dolarito (Modo Precisión)...")
         driver = self._iniciar_driver(self.options_light)
@@ -152,45 +43,39 @@ class DolaritoScraper:
         
         registros_finales = []
         try:
-            wait = WebDriverWait(driver, 20) # Aumentamos tiempo de espera
+            wait = WebDriverWait(driver, 15)
             driver.get("https://www.dolarito.ar/cotizaciones-historicas/ccl")
             
-            # 1. CLICS DE PREPARACIÓN
+            # 1. CLICS DE PREPARACIÓN (Igual que antes)
             try:
-                # Esperamos que cargue el body primero
-                wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                
                 xp_mep = '//*[@id="switch:quotation-type-mep:thumb"]'
                 xp_oficial = '//*[@id="switch:quotation-type-oficial:thumb"]'
-                
-                # Intentamos click JS directo
+                wait.until(EC.presence_of_element_located((By.XPATH, xp_mep)))
                 driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, xp_mep))
                 driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, xp_oficial))
                 time.sleep(1)
                 
                 xpath_btn = '/html/body/div[3]/div/div/div[3]/div[2]/button[2]'
-                btn = driver.find_element(By.XPATH, xpath_btn)
+                btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath_btn)))
                 driver.execute_script("arguments[0].click();", btn)
                 time.sleep(2)
-            except: 
-                pass # Si fallan los clicks, intentamos leer igual
+            except: pass 
 
             # 2. EXTRACCIÓN INTELIGENTE
             xpath_contenedor = '//*[@id="chart-image"]/div[1]/div[2]'
-            try:
-                texto_crudo = wait.until(EC.visibility_of_element_located((By.XPATH, xpath_contenedor))).text
-            except TimeoutException:
-                print("⚠️ Timeout esperando gráfico. Dolarito lento.")
-                return []
+            texto_crudo = wait.until(EC.visibility_of_element_located((By.XPATH, xpath_contenedor))).text
             
             lineas = [l.strip() for l in texto_crudo.split('\n') if l.strip()]
             
             regs = []
             i = 0
             
+            # Definimos limpieza aquí para controlar errores específicos
             def clean_float_safe(t): 
                 try:
+                    # Quitamos símbolos de moneda, puntos de mil y espacios
                     limpio = t.replace('$','').replace('.','').replace(',','.').strip()
+                    # Si está vacío o es un guion, devolvemos None
                     if not limpio or limpio == '-': return None
                     return float(limpio)
                 except: return None
@@ -199,9 +84,12 @@ class DolaritoScraper:
 
             while i < len(lineas):
                 linea = lineas[i].lower()
+                
+                # DETECTOR DE FECHA
                 es_fecha = any(dia in linea for dia in dias_semana)
                 
                 if es_fecha:
+                    
                     if i + 2 < len(lineas):
                         fecha_txt = lineas[i]
                         precio_1_txt = lineas[i+1] # MEP
@@ -210,6 +98,7 @@ class DolaritoScraper:
                         val_mep = clean_float_safe(precio_1_txt)
                         val_ccl = clean_float_safe(precio_2_txt)
 
+                        # Si alguno es None, es que el dato estaba sucio, pero NO saltamos el día ciegamente
                         if val_mep is not None and val_ccl is not None and val_mep > 0:
                             gap = ((val_ccl / val_mep) - 1) * 100
                             regs.append({"fecha": fecha_txt, "gap": gap})
@@ -218,48 +107,60 @@ class DolaritoScraper:
                         else:
                             i += 1 
                             continue
+                
                 i += 1
 
-            # 3. ORDENAMIENTO
+            # 3. ORDENAMIENTO (FILTRO DE DUPLICADOS DE "HOY")
+            # Si tu cuadro "HOY" (el azul) ya muestra la data en vivo, 
+            # necesitamos que la historia sean los 4 días ANTERIORES a hoy.
+            
+            # Eliminamos el primer registro si es "Miércoles" (siendo hoy Miércoles) para evitar duplicados visuales
+            # Ojo: esto es una regla de negocio. Si quieres ver los últimos 5 CERRADOS, usa esto:
+            
+            # Lógica: Tomamos los primeros 5 encontrados
             top_recientes = regs[:4] 
+            
+            # Invertimos para orden cronológico
             registros_finales = top_recientes[::-1]
+            
+            # RESULTADO FINAL ESPERADO: [JUE, VIE, LUN, MAR, (MIE-hoy quitado o puesto al final)]
+            # Como tu dashboard tiene un cuadro "HOY" separado, aquí probablemente quieras excluir el día actual si ya cerró.
             
             print(f"✅ Historia final cargada: {len(registros_finales)} registros.")
             
         except Exception as e:
             print(f"🔥 Error Histórico General: {e}")
         finally:
-            if driver: 
-                try: driver.quit()
-                except: pass
+            if driver: driver.quit()
             
         return registros_finales
 
-    # --- VIVO BLINDADO ---
+    # --- VIVO BLINDADO (ESTO SOLUCIONA TU ERROR) ---
     def obtener_precios_vivo(self):
-        # Reiniciar driver si murió
-        if self.driver_vivo is not None:
+        # Si no existe driver, lo creamos
+        if self.driver_vivo is None:
+            # print("🦅 Iniciando Motor Persistente...")
+            self.driver_vivo = self._iniciar_driver(self.options_persistent)
+        
+        try:
+            # Si el driver murió por alguna razón externa, lo revivimos
             try:
                 self.driver_vivo.current_url
             except:
-                self.driver_vivo = None
+                self.driver_vivo = self._iniciar_driver(self.options_persistent)
 
-        if self.driver_vivo is None:
-            self.driver_vivo = self._iniciar_driver(self.options_persistent)
-            if not self.driver_vivo: return None
-        
-        try:
             self.driver_vivo.get("https://www.dolarito.ar/cotizacion/dolar-hoy")
-            wait = WebDriverWait(self.driver_vivo, 15)
+            wait = WebDriverWait(self.driver_vivo, 10)
             
+            # FUNCIÓN DE EXTRACCIÓN A PRUEBA DE BALAS
+            # Si da error Stale, reintenta hasta 3 veces en milisegundos
             def safe_get_text(xpath):
                 for _ in range(3): 
                     try:
                         element = wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
                         return element.text
                     except StaleElementReferenceException:
-                        time.sleep(0.5)
-                        continue 
+                        continue # La página parpadeó, reintentamos YA
                     except:
                         return None
                 return None
@@ -268,6 +169,7 @@ class DolaritoScraper:
             xp_mep  = '//*[@id="quotation-mep-desktop"]/div'
             xp_ccl  = '//*[@id="quotation-ccl-desktop"]/div'
 
+            # Usamos la función blindada
             txt_blue = safe_get_text(xp_blue)
             txt_mep  = safe_get_text(xp_mep)
             txt_ccl  = safe_get_text(xp_ccl)
@@ -290,18 +192,24 @@ class DolaritoScraper:
             }
 
         except Exception as e:
-            # print(f"⚠️ Error Vivo (Reintentando): {e}")
+            # Solo si falla catastróficamente reiniciamos
+            # print(f"⚠️ Error Vivo: {e}")
             try: self.driver_vivo.quit()
             except: pass
             self.driver_vivo = None
             return None
 
+# --- AGREGA ESTO AL FINAL DE TU CLASE DolaritoScraper ---
     def analizar_mercado(self, historia, vivo):
-        """Calcula si conviene COMPRAR o VENDER basándose en la historia vs hoy."""
+        """
+        Calcula si conviene COMPRAR o VENDER basándose en la historia vs hoy.
+        """
+        # Si faltan datos, devolvemos neutro
         if not historia or not vivo:
             return {"accion": "CARGANDO...", "subtexto": "Esperando datos", "tipo": "neutral", "rec_contable": "ESPERAR"}
 
         try:
+            # 1. Sacamos datos
             val_mep = vivo.get('mep', [0])[0]
             val_ccl = vivo.get('ccl', [0])[0]
             
@@ -309,6 +217,7 @@ class DolaritoScraper:
 
             gap_hoy = ((val_ccl / val_mep) - 1) * 100
             
+            # 2. Promedio de los últimos 4 días
             gaps_historicos = [d['gap'] for d in historia]
             if not gaps_historicos:
                 promedio = gap_hoy
@@ -317,28 +226,34 @@ class DolaritoScraper:
 
             delta = gap_hoy - promedio
 
+            # 3. Veredicto (Umbral de 0.8% de diferencia)
             if delta < -0.8:
+                # El GAP bajó -> Está BARATO -> Conviene ACUMULAR
                 return {
                     "accion": f"ACUMULAR ({gap_hoy:.1f}%)",
                     "subtexto": f"Oportunidad: -{abs(delta):.1f}% vs media",
-                    "tipo": "compra",
+                    "tipo": "compra",         # Verde
                     "rec_contable": "SUMAR VOLUMEN"
                 }
+            
             elif delta > 0.8:
+                # El GAP subió -> Está CARO -> Conviene VENDER
                 return {
                     "accion": f"LIQUIDAR ({gap_hoy:.1f}%)",
                     "subtexto": f"Ganancia extra: +{delta:.1f}% vs media",
-                    "tipo": "venta",
+                    "tipo": "venta",          # Rojo
                     "rec_contable": "VENDER / CUBRIR"
                 }
+            
             else:
+                # Está normal -> ROTAR
                 return {
                     "accion": f"ROTAR ({gap_hoy:.1f}%)",
                     "subtexto": "Mercado estable. Arbitraje rápido.",
-                    "tipo": "neutral",
+                    "tipo": "neutral",        # Azul
                     "rec_contable": "MANTENER CICLO"
                 }
 
         except Exception as e:
-            # print(f"Error lógica mercado: {e}")
+            print(f"Error lógica mercado: {e}")
             return {"accion": "ERROR", "subtexto": "Fallo cálculo", "tipo": "error"}

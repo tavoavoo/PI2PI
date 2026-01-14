@@ -61,7 +61,10 @@ class DashboardView(ctk.CTkFrame):
         # --- FASE 1: BARRA DE ESTADO (Compacta y Alineada) ---
         self.patrimonio_frame = ctk.CTkFrame(self, fg_color="transparent", height=45)
         self.patrimonio_frame.pack(fill="x", padx=20, pady=(0, 10)) # Un poco de aire abajo
-        
+        self.clima_buffer = []  # Buffer de últimos 5 estados
+        self.clima_actual_estable = "ROTAR (0.0%)"
+        self.ultimo_cambio_clima = 0  # Timestamp del último cambio
+        self.DELAY_CAMBIO_CLIMA = 15  # Segundos antes de permitir cambio
         # Función auxiliar para crear celdas idénticas (Título + Valor)
         def crear_celda(parent, titulo, color_val):
             frame = ctk.CTkFrame(parent, fg_color="transparent")
