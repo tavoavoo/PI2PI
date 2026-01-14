@@ -41,7 +41,7 @@ class DashboardView(ctk.CTkFrame):
         self.historical_gaps = [] 
         self.is_scanning = False 
         self.datos_historicos_cache = []
-        
+        self.ultimo_guardado_historia = 0
         self.current_usdt_price = 0.0
         self.cached_mep = 0.0; self.cached_mep_pct = "0,00%"
         self.cached_blue = 0.0; self.cached_blue_pct = "0,00%"
@@ -123,11 +123,37 @@ class DashboardView(ctk.CTkFrame):
             lbl_gap.pack(pady=(0,4))
             self.market_widgets.append((f, lbl_dia, lbl_gap))
 
-        # --- FASE 3: MERCADO (WIDGET EXTERNO) ---
-        # Esto llama al diseño nuevo (Stats Izquierda | Cards Derecha)
-        self.historical_timeline = HistoricalTimelineWidget(self, self.historical_analyzer)
-        self.historical_timeline.pack(fill="x", padx=20, pady=(3,5))
-
+        # --- FASE 3: TERMÓMETRO DEL DÍA (Rango Intradiario) ---
+        # Reemplaza al gráfico. Muestra si el precio actual está en el PISO o en el TECHO del día.
+        self.daily_frame = ctk.CTkFrame(self, fg_color="#151515", border_width=1, border_color="#333", corner_radius=8)
+        self.daily_frame.pack(fill="x", padx=20, pady=(3,5))
+        
+        # Título y Datos
+        header_termometro = ctk.CTkFrame(self.daily_frame, fg_color="transparent")
+        header_termometro.pack(fill="x", padx=15, pady=(8,2))
+        
+        ctk.CTkLabel(header_termometro, text="RANGO DE PRECIOS HOY (00:00 - AHORA)", font=("Arial", 11, "bold"), text_color="gray").pack(side="left")
+        
+        # Grid de Precios (Min - Prom - Max)
+        ranges_grid = ctk.CTkFrame(self.daily_frame, fg_color="transparent")
+        ranges_grid.pack(fill="x", padx=15, pady=2)
+        ranges_grid.grid_columnconfigure((0,1,2), weight=1)
+        
+        self.lbl_day_min = ctk.CTkLabel(ranges_grid, text="Mín: $ ---", font=("Arial", 14, "bold"), text_color="#2ecc71") # Verde
+        self.lbl_day_min.grid(row=0, column=0, sticky="w")
+        
+        self.lbl_day_avg = ctk.CTkLabel(ranges_grid, text="Prom: $ ---", font=("Arial", 12), text_color="gray")
+        self.lbl_day_avg.grid(row=0, column=1)
+        
+        self.lbl_day_max = ctk.CTkLabel(ranges_grid, text="Máx: $ ---", font=("Arial", 14, "bold"), text_color="#e74c3c") # Rojo
+        self.lbl_day_max.grid(row=0, column=2, sticky="e")
+        
+        # Barra Visual (El Termómetro)
+        self.range_bar = ctk.CTkProgressBar(self.daily_frame, height=12, corner_radius=6)
+        self.range_bar.pack(fill="x", padx=15, pady=(5,12))
+        self.range_bar.set(0.5) # Inicia al medio
+        self.range_bar.configure(progress_color="#3498db", fg_color="#333")
+        
         # --- FASE 4: GESTIÓN Y DECISIÓN ---
         self.radar_frame = ctk.CTkFrame(self, fg_color="#101010", border_width=1, border_color="#333")
         self.radar_frame.pack(fill="x", padx=20, pady=(5,8))
@@ -452,11 +478,10 @@ class DashboardView(ctk.CTkFrame):
             
             self.current_usdt_price = market_ask_1
 
-            # PRECIOS
+            # Actualizar Tarjetas de Precios
             self.update_price_card(self.card_blue, blue, blue_pct)
             self.update_price_card(self.card_mep, mep, mep_pct)
             self.update_price_card(self.card_ccl, ccl, ccl_pct)
-
             self.update_price_card(self.card_p2p_ask, market_bid_p2p5, None) 
             self.update_price_card(self.card_p2p_bid, market_ask_p2p5, None)
             
@@ -464,19 +489,43 @@ class DashboardView(ctk.CTkFrame):
             self.lbl_total_ars.configure(text=f"$ {saldo_ars:,.0f}")
             self.lbl_total_usdt.configure(text=f"{stock_usdt:,.2f}")
             
-            # CUADRO VIVO
+            # Actualizar Tarjeta CANJE VIVO
             frame_vivo, lbl_dia_vivo, lbl_gap_vivo = self.market_widgets[-1]
-            
             frame_vivo.configure(fg_color="#1a1a1a", border_color="#3498db", border_width=2)
-            
             color_vivo = "white"
             if canje_vivo > 5.00: color_vivo = "#e74c3c"
             elif canje_vivo < 2.00: color_vivo = "#2ecc71"
-            
             lbl_dia_vivo.configure(text="CANJE", text_color="#3498db")
             lbl_gap_vivo.configure(text=f"{canje_vivo:.2f}%", text_color=color_vivo)
             
-            # DECISIÓN
+            # --- GUARDADO EN BASE DE DATOS (CORREGIDO) ---
+            import time
+            ahora_ts = time.time()
+            # Inicializamos variable si no existe
+            if not hasattr(self, 'ultimo_guardado_historia'): self.ultimo_guardado_historia = 0
+
+            # Guardamos cada 60 segundos
+            if (ahora_ts - self.ultimo_guardado_historia) >= 60: 
+                try:
+                    f_db = datetime.now().strftime("%Y-%m-%d")
+                    h_db = datetime.now().strftime("%H:%M:%S")
+                    
+                    # CORRECCIÓN: Borré 'ccl_tipo' para que entre en tu base de datos vieja
+                    self.controller.cursor.execute("""
+                        INSERT INTO p2p_history (fecha, hora, usdt_buy_p5, usdt_sell_p5, mep, ccl, gap_ccl)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (f_db, h_db, market_bid_p2p5, market_ask_p2p5, mep, ccl, gap_ccl))
+                    
+                    self.controller.conn.commit()
+                    self.ultimo_guardado_historia = ahora_ts
+                    print(f"💾 Historial P2P guardado: {h_db} | Venta: {market_ask_p2p5}")
+                except Exception as e:
+                    print(f"⚠️ Error guardando historial: {e}")
+
+            val_ref_termometro = float(market_ask_p2p5) if market_ask_p2p5 else 0.0
+            self.actualizar_termometro(val_ref_termometro)
+
+            # --- LÓGICA DE DECISIÓN Y ESTRATEGIAS (MANTENIDA) ---
             if saldo_ars > 50000:
                 mejor_entrada = min(market_bid_1, market_ask_1)
                 modo_entrada = "(TAKER)" if market_ask_1 < market_bid_1 else "(MAKER)"
@@ -488,7 +537,6 @@ class DashboardView(ctk.CTkFrame):
             self.lbl_buy_action.configure(text=txt_act, text_color=col_act)
             self.lbl_buy_detail.configure(text=det_act)
 
-            # CLIMA
             desvio = gap_vivo - 3.0
             clima_txt = "Estable"; color_clima = "#3498db"
             if gap_vivo > 0:
@@ -503,45 +551,33 @@ class DashboardView(ctk.CTkFrame):
             self.lbl_sell_action.configure(text=txt_sell, text_color=col_sell)
             self.lbl_sell_detail.configure(text=det_sell)
 
-            # ESTRATEGIAS
-            val_ask_1 = float(market_ask_1) if market_ask_1 else 0.0
+            # ESTRATEGIAS: SPREAD MAKER/MAKER
             val_ask_15 = float(market_ask_p2p5) if market_ask_p2p5 else 0.0
-            val_bid_1 = float(market_bid_1) if market_bid_1 else 0.0
             val_bid_15 = float(market_bid_p2p5) if market_bid_p2p5 else 0.0
-
+            
             if val_bid_15 > 0 and val_ask_15 > 0:
                 profit_a = ((val_ask_15 * (1 - maker_fee)) / (val_bid_15 * (1 + maker_fee)) - 1) * 100
-                skew_p2 = 0.0
-                if val_ask_1 > 0 and val_ask_15 > 0: skew_p2 = ((val_ask_15 / val_ask_1) - 1) * 100
-                
-                texto_final = f"Spr: {profit_a:+.2f}% | Sk: {skew_p2:.2f}%"
                 col_a = "#e74c3c"
-                if profit_a > 1.5 and skew_p2 < 2.0: col_a = "#2ecc71"
+                if profit_a > 1.5: col_a = "#2ecc71"
                 elif profit_a > 0: col_a = "#f39c12"
-                self.strat_a.configure(text=texto_final, text_color=col_a)
-            else:
-                self.strat_a.configure(text="S/D", text_color="gray")
+                self.strat_a.configure(text=f"Spr: {profit_a:+.2f}%", text_color=col_a)
+            else: self.strat_a.configure(text="S/D", text_color="gray")
 
+            # ESTRATEGIAS: GANANCIA REAL (PROFIT vs PPP)
             if val_ask_15 > 0 and ppp > 0:
-                # Fórmula: ((Precio_Venta * (1 - Comision)) / Costo_PPP) - 1
                 profit_real = ((val_ask_15 * (1 - maker_fee)) / ppp - 1) * 100
-                
                 text_b = f"Gan: {profit_real:+.2f}%"
-                col_b = "#e74c3c" # Rojo si pierdes
-                
-                if profit_real > 0.5: col_b = "#2ecc71" # Verde si ganas bien
-                elif profit_real > 0: col_b = "#f39c12" # Amarillo si ganas poco
-                
+                col_b = "#e74c3c"
+                if profit_real > 0.5: col_b = "#2ecc71"
+                elif profit_real > 0: col_b = "#f39c12"
                 self.strat_b.configure(text=text_b, text_color=col_b)
             else:
                 self.strat_b.configure(text="S/D (Sin PPP)", text_color="gray")
 
+            # ESTRATEGIAS: ARBITRAJE DE PUNTAS
             UMBRAL_MIN = 0.3
-            if profit_c_buy >= UMBRAL_MIN:
-                tipo_buy = "💎 VIABLE"; color_buy = "#2ecc71"
-            else:
-                tipo_buy = "SIN SETUP"; color_buy = "gray"; profit_c_buy = max(profit_c_buy, -5.0)
-
+            if profit_c_buy >= UMBRAL_MIN: tipo_buy = "💎 VIABLE"; color_buy = "#2ecc71"
+            else: tipo_buy = "SIN SETUP"; color_buy = "gray"; profit_c_buy = max(profit_c_buy, -5.0)
             self.update_strat_card(self.strat_c_buy, profit_c_buy, "Mín: 0.3%")
 
             if profit_c_sell == -999.0: tipo_sell = "SIN PPP"; color_sell = "gray"; profit_c_sell = 0.0
@@ -549,7 +585,6 @@ class DashboardView(ctk.CTkFrame):
             elif profit_c_sell >= 0.3: tipo_sell = "⚠️ MARGINAL"; color_sell = "#f39c12"
             elif profit_c_sell >= 0.0: tipo_sell = "🔵 NEUTRO"; color_sell = "#3498db"
             else: tipo_sell = "🛑 HOLDEAR"; color_sell = "#e74c3c"; profit_c_sell = max(profit_c_sell, -5.0)
-
             self.update_strat_card(self.strat_c_sell, profit_c_sell, "Mín: 0.3%")
             
             self.lbl_equity.configure(text=f"US$ {(saldo_ars / market_ask_1 + stock_usdt):,.2f}" if market_ask_1 else "---")
@@ -631,7 +666,49 @@ class DashboardView(ctk.CTkFrame):
     def confirmar_reset_ppp(self): 
         def do_reset(): self.controller.reiniciar_ppp(); self.lbl_ppp_radar.configure(text=f"PPP: $ 0.00")
         self.controller.ask_confirm("Reiniciar PPP", "¿Archivar compras y volver a 0?", do_reset)
-    
+    def actualizar_termometro(self, precio_referencia=None):
+        """Calcula el Mínimo y Máximo de venta de HOY y mueve la barra."""
+        try:
+            hoy = datetime.now().strftime("%Y-%m-%d")
+            # Usamos LIKE para asegurar compatibilidad de fecha
+            query = f"SELECT MIN(usdt_sell_p5), MAX(usdt_sell_p5), AVG(usdt_sell_p5) FROM p2p_history WHERE fecha LIKE '{hoy}%'"
+            self.controller.cursor.execute(query)
+            res = self.controller.cursor.fetchone()
+            
+            if res and res[0] is not None:
+                d_min, d_max, d_avg = res
+                
+                # CORRECCIÓN: Usamos el precio referencia (P2P 5) si existe, sino el promedio
+                curr = precio_referencia if (precio_referencia and precio_referencia > 0) else d_avg
+                
+                # Ajuste visual de límites (Expandir el rango si el precio actual lo rompe)
+                d_min = min(d_min, curr)
+                d_max = max(d_max, curr)
+
+                self.lbl_day_min.configure(text=f"Mín: $ {d_min:,.0f}")
+                self.lbl_day_max.configure(text=f"Máx: $ {d_max:,.0f}")
+                self.lbl_day_avg.configure(text=f"Prom: $ {d_avg:,.0f}")
+                
+                # Calcular Posición
+                rango = d_max - d_min
+                
+                if rango > 0:
+                    posicion = (curr - d_min) / rango
+                    posicion = max(0.0, min(1.0, posicion))
+                    self.range_bar.set(posicion)
+                    
+                    if posicion < 0.25: self.range_bar.configure(progress_color="#2ecc71") # Barato
+                    elif posicion > 0.75: self.range_bar.configure(progress_color="#e74c3c") # Caro
+                    else: self.range_bar.configure(progress_color="#3498db")
+                else:
+                    self.range_bar.set(0.5) # Rango nulo (Min=Max)
+                    self.range_bar.configure(progress_color="#3498db")
+            else:
+                self.lbl_day_avg.configure(text="Sin datos...")
+                self.range_bar.set(0)
+        except Exception as e:
+            print(f"Error termometro: {e}")
+
     def update_view(self): self.update_stats_footer()
 
     def actualizar_tablero_estrategico(self):
